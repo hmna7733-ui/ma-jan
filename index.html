@@ -348,7 +348,9 @@ function handleAuthChange(user){
           DB.members = remote.members || DB.members;
           DB.history = remote.history || DB.history;
           DB.chipTx = remote.chipTx || DB.chipTx || [];
+          DB.groups = remote.groups || DB.groups || [];
           DB.rules.forEach(ensureRuleDefaults);
+          DB.members.forEach(ensureMemberDefaults);
           localStorage.setItem(LS_KEY, JSON.stringify(DB));
           render();
         }catch(e){ console.error('parse error', e); }
@@ -370,7 +372,7 @@ function queueCloudPush(immediate=false){
   const doWrite = ()=>{
     _isUploading = true;
     userDocRef().set({
-      payload: JSON.stringify({rules:DB.rules, members:DB.members, history:DB.history, chipTx:DB.chipTx}),
+      payload: JSON.stringify({rules:DB.rules, members:DB.members, history:DB.history, chipTx:DB.chipTx, groups:DB.groups}),
       updatedAt: firebase.firestore.FieldValue.serverTimestamp()
     }).then(()=>{ setTimeout(()=>{_isUploading=false;}, 1500); })
     .catch(e=>{ console.error('sync error', e); _isUploading=false; setTimeout(()=>queueCloudPush(true), 3000); });
@@ -482,15 +484,31 @@ function firestoreErrorMessage(e){
 }
 
 /* ============ データ層 ============ */
-let DB = { rules:[], members:[], history:[], chipTx:[] };
+function ensureMemberDefaults(m){
+  if(m.isSelf===undefined) m.isSelf=false;
+  if(!m.groupIds) m.groupIds=[];
+  return m;
+}
+
+let DB = { rules:[], members:[], history:[], chipTx:[], groups:[] };
 try{
   const saved = JSON.parse(localStorage.getItem(LS_KEY) || 'null');
-  if(saved){ DB = saved; if(!DB.chipTx) DB.chipTx=[]; if(!DB.rules) DB.rules=[]; DB.rules.forEach(ensureRuleDefaults); }
+  if(saved){
+    DB = saved;
+    if(!DB.chipTx) DB.chipTx=[];
+    if(!DB.rules) DB.rules=[];
+    if(!DB.members) DB.members=[];
+    if(!DB.groups) DB.groups=[];
+    DB.rules.forEach(ensureRuleDefaults);
+    DB.members.forEach(ensureMemberDefaults);
+  }
 }catch(e){}
 
 function persist(part){
   localStorage.setItem(LS_KEY, JSON.stringify(DB));
-  queueCloudPush();
+  // ルール/メンバー/履歴/チップの保存は明示的な保存操作のたびに呼ばれるだけなので、
+  // デバウンスせず即座にクラウドへ反映する（他端末での反映を早くするため）
+  queueCloudPush(true);
 }
 
 const RATE_PRESETS = [50, 100, 200, 300, 500, 1000];
@@ -519,7 +537,7 @@ function ensureRuleDefaults(r){
     renchanType:'tenpai_keishiki', shibariType:'none', shibariHan:2,
     fuCalculation:true, tsumoLoss:false, tsumoPinAri:true,
     kitaHandling:'nukidora',
-    specialTiles:[], memo:''
+    specialTiles:[], groupIds:[], memo:''
   };
   if(typeof r.akaDora==='number' && r.akaDoraMan===undefined){
     r.akaDoraMan = r.akaDora; r.akaDoraPin=0; r.akaDoraSou=0;
@@ -644,11 +662,14 @@ function renderHome(){
     html += `<div class="empty-state"><div class="big">📋</div>ルールが未登録です<br><button class="btn secondary" style="margin-top:12px" onclick="Router.go('settings')">設定でルールを追加</button></div></div>`;
     document.getElementById('app').innerHTML=html; return;
   }
+  const visibleMembers = (rule.groupIds && rule.groupIds.length)
+    ? DB.members.filter(m=>m.groupIds && m.groupIds.some(gid=>rule.groupIds.includes(gid)))
+    : DB.members;
   html += `<label class="field">メンバー選択（${rule.playerCount}人）</label><div class="row wrap">`;
-  if(DB.members.length===0){
-    html += `<span class="small-note">メンバーが未登録です。<button class="link-btn" onclick="Router.go('settings')">設定で追加</button></span>`;
+  if(visibleMembers.length===0){
+    html += `<span class="small-note">${DB.members.length===0?'メンバーが未登録です。':'このルールのグループに該当するメンバーがいません。'}<button class="link-btn" onclick="Router.go('settings')">設定で追加</button></span>`;
   } else {
-    DB.members.forEach(m=>{
+    visibleMembers.forEach(m=>{
       const selected = UI.home.memberIds.includes(m.id);
       const disabled = !selected && UI.home.memberIds.length>=rule.playerCount;
       html += `<div class="chip ${selected?'selected':''} ${disabled?'disabled':''}" onclick="${disabled?'':`Home.toggleMember('${m.id}')`}"><span class="dot" style="background:${selected?'#fff':m.color}"></span>${esc(m.name)}</div>`;
@@ -1177,15 +1198,30 @@ function renderSettings(){
     <button class="btn block" onclick="Settings.newRule()">＋ 新規ルールを追加</button>
     <button class="btn ghost block" style="margin-top:8px" onclick="Settings.openReceiveRuleModal()">🔗 コードでルールを受け取る</button>`;
   } else if(UI.settingsSub==='members'){
-    html+=`<div class="card"><h3>👤 登録済みメンバー</h3>`;
+    html+=`<div class="card"><h3>🏷 グループ管理</h3>
+      <div class="row wrap">
+        ${DB.groups.length===0?`<span class="small-note">グループはまだありません。</span>`:
+          DB.groups.map(g=>`<div class="chip selected" style="gap:8px">${esc(g.name)}<span style="cursor:pointer;font-weight:800" onclick="Settings.removeGroup('${g.id}')">✕</span></div>`).join('')}
+      </div>
+      <div class="row" style="margin-top:10px;gap:8px">
+        <input type="text" id="newGroupName" placeholder="新しいグループ名（例：会社の仲間）" style="flex:1">
+        <button class="btn sm secondary" onclick="Settings.addGroupFromInput()">追加</button>
+      </div>
+      <div class="hint" style="margin-top:8px">グループはメンバー・ルールの両方に設定できます。ルールにグループを設定すると、ホーム画面のメンバー選択がそのグループのメンバーだけに絞り込まれます。</div>
+    </div>
+    <div class="card"><h3>👤 登録済みメンバー</h3>`;
     if(DB.members.length===0){ html+=`<div class="small-note">未登録</div>`; }
     DB.members.forEach(m=>{
-      html+=`<div class="member-row">
-        <div class="nm">${avatarHtml(m.id,30)} ${esc(m.name)}</div>
-        <div class="row" style="gap:6px">
-          <button class="btn sm secondary" onclick="Settings.editMember('${m.id}')">編集</button>
-          <button class="btn sm danger" onclick="Settings.removeMember('${m.id}')">削除</button>
+      const groupNames = (m.groupIds||[]).map(gid=>{ const g=DB.groups.find(x=>x.id===gid); return g?g.name:null; }).filter(Boolean);
+      html+=`<div class="member-row" style="flex-direction:column;align-items:stretch">
+        <div class="row" style="justify-content:space-between;align-items:center">
+          <div class="nm">${avatarHtml(m.id,30)} ${esc(m.name)}${m.isSelf?' <span class="small-note">（自分）</span>':''}</div>
+          <div class="row" style="gap:6px">
+            <button class="btn sm secondary" onclick="Settings.editMember('${m.id}')">編集</button>
+            <button class="btn sm danger" onclick="Settings.removeMember('${m.id}')">削除</button>
+          </div>
         </div>
+        ${groupNames.length?`<div class="small-note" style="margin:4px 0 0 38px">${groupNames.map(esc).join('・')}</div>`:''}
       </div>`;
     });
     html+=`</div><button class="btn block" onclick="Settings.newMember()">＋ メンバーを追加</button>`;
@@ -1211,12 +1247,37 @@ const Settings = {
 
   newMember(){
     UI.editingMemberId=null;
-    UI.memberDraft={ id:uid(), name:'', color:PALETTE[DB.members.length % PALETTE.length] };
+    UI.memberDraft={ id:uid(), name:'', color:PALETTE[DB.members.length % PALETTE.length], isSelf:false, groupIds:[] };
     renderMemberModal();
+  },
+  toggleMemberDraft(key){ UI.memberDraft[key]=!UI.memberDraft[key]; renderMemberModal(); },
+  toggleMemberGroup(groupId){
+    UI.memberDraft.groupIds = UI.memberDraft.groupIds || [];
+    const idx = UI.memberDraft.groupIds.indexOf(groupId);
+    if(idx>=0) UI.memberDraft.groupIds.splice(idx,1); else UI.memberDraft.groupIds.push(groupId);
+    renderMemberModal();
+  },
+  addGroupFromInput(){
+    const el = document.getElementById('newGroupName');
+    if(!el) return;
+    const name = el.value.trim();
+    if(!name) return;
+    DB.groups.push({ id:uid(), name });
+    persist('groups');
+    render();
+  },
+  removeGroup(id){
+    showConfirmModal('グループを削除しますか？','このグループを削除すると、メンバー・ルールに設定されている割り当ても解除されます。', ()=>{
+      DB.groups = DB.groups.filter(g=>g.id!==id);
+      DB.members.forEach(m=>{ if(m.groupIds) m.groupIds = m.groupIds.filter(gid=>gid!==id); });
+      DB.rules.forEach(r=>{ if(r.groupIds) r.groupIds = r.groupIds.filter(gid=>gid!==id); });
+      persist('groups'); persist('members'); persist('rules');
+      render();
+    }, '削除する');
   },
   editMember(id){
     UI.editingMemberId=id;
-    UI.memberDraft=JSON.parse(JSON.stringify(getMember(id)));
+    UI.memberDraft=ensureMemberDefaults(JSON.parse(JSON.stringify(getMember(id))));
     renderMemberModal();
   },
   removeMember(id){
@@ -1275,6 +1336,12 @@ const Settings = {
     rerenderRulePreserve();
   },
   applyUmaPreset(arr){ UI.ruleDraft.uma=[...arr]; rerenderRulePreserve(); },
+  toggleRuleGroup(groupId){
+    UI.ruleDraft.groupIds = UI.ruleDraft.groupIds || [];
+    const idx = UI.ruleDraft.groupIds.indexOf(groupId);
+    if(idx>=0) UI.ruleDraft.groupIds.splice(idx,1); else UI.ruleDraft.groupIds.push(groupId);
+    rerenderRulePreserve();
+  },
   updateDraft(key,val){ UI.ruleDraft[key]=val; },
   toggleDraft(key){ UI.ruleDraft[key]=!UI.ruleDraft[key]; rerenderRulePreserve(); },
   setShibariType(val){ UI.ruleDraft.shibariType=val; rerenderRulePreserve(); },
@@ -1433,6 +1500,13 @@ function renderMemberModal(){
           ${PALETTE.map(c=>`<div class="swatch ${d.color===c?'selected':''}" style="background:${c}" onclick="Settings.updateMemberDraft('color','${c}'); renderMemberModal()"></div>`).join('')}
         </div>
       </div>
+      ${toggleRow('自分','自分自身のメンバーとしてマークする', d.isSelf, "Settings.toggleMemberDraft('isSelf')")}
+      <div class="field-wrap"><label class="field">グループ（複数選択可）</label>
+        <div class="row wrap">
+          ${DB.groups.length===0?`<span class="small-note">グループがまだありません。下の「グループ管理」から追加してください。</span>`:
+            DB.groups.map(g=>`<div class="chip ${(d.groupIds||[]).includes(g.id)?'selected':''}" onclick="Settings.toggleMemberGroup('${g.id}')">${esc(g.name)}</div>`).join('')}
+        </div>
+      </div>
       <button class="btn block" style="margin-top:8px" onclick="Settings.saveMember()">保存する</button>
     </div>
   </div>`;
@@ -1463,6 +1537,14 @@ function renderRuleModal(){
           <div class="chip ${d.playerCount===4?'selected':''}" onclick="Settings.setPlayerCount(4)">4人打ち</div>
           <div class="chip ${d.playerCount===3?'selected':''}" onclick="Settings.setPlayerCount(3)">3人打ち</div>
         </div></div>
+
+      <div class="field-wrap"><label class="field">対象グループ（複数選択可）</label>
+        <div class="row wrap">
+          ${DB.groups.length===0?`<span class="small-note">グループがまだありません。設定→メンバー管理から追加できます。</span>`:
+            DB.groups.map(g=>`<div class="chip ${(d.groupIds||[]).includes(g.id)?'selected':''}" onclick="Settings.toggleRuleGroup('${g.id}')">${esc(g.name)}</div>`).join('')}
+        </div>
+        <div class="hint">選んだグループのメンバーだけが、ホーム画面のメンバー選択に表示されます。何も選ばない場合は全メンバーが表示されます。</div>
+      </div>
 
       ${toggleRow('レート換算','1000点あたりの円換算を表示', d.rateEnabled, "Settings.toggleDraft('rateEnabled')",
         `<div class="field-wrap">
@@ -1586,7 +1668,7 @@ function renderRuleModal(){
             <option value="zero" ${d.tobiRule==='zero'?'selected':''}>0点でトビ（0点以下で即終了）</option>
             <option value="minus100" ${d.tobiRule==='minus100'?'selected':''}>0点継続（-100点以下でトビ扱い）</option>
           </select>
-          <label class="field" style="margin-top:8px">トビ罰点（ウマと同じ単位。例：20 → -20000点相当）</label>
+          <label class="field" style="margin-top:8px">トビ罰符（ウマと同じ単位。例：20 → -20000点相当）</label>
           <input type="number" step="1" value="${d.tobiPenalty}" ${d.tobiAri?'':'disabled'} oninput="Settings.updateDraft('tobiPenalty', numOrZero(this.value))">
         </div>`)}
       ${toggleRow('赤ドラ','各牌種ごとの枚数を管理', d.akaDoraEnabled, "Settings.toggleDraft('akaDoraEnabled')",
@@ -1785,6 +1867,7 @@ function renderRuleDetailModal(){
   const extraYakumanLabel = {daisharin:'大車輪',daisharin_free:'大車輪（ピンズ以外も可）',surenko:'四連刻',manzu_routou:'萬子老頭',nagashi_tanyao:'流しタンヤオ',other:'その他'};
   const rows = [
     ['人数', r.playerCount+'人打ち'],
+    ['対象グループ', (r.groupIds&&r.groupIds.length) ? r.groupIds.map(gid=>{const g=DB.groups.find(x=>x.id===gid); return g?g.name:null;}).filter(Boolean).join('・') : '全メンバー'],
     ['レート', r.rateEnabled ? ('1000点＝'+r.rate+'円') : 'なし'],
     ['チップ', r.chipEnabled ? (r.chipValue+'円/枚・発動条件:'+({none:'なし',riichi:'リーチ祝儀',menzen:'面前祝儀',naki:'鳴き祝儀'}[r.chipCondition])) : 'なし'],
     ['役満祝儀', r.chipEnabled ? ('ツモ'+r.yakumanTsumoChip+'枚オール/ロン'+r.yakumanRonChip+'枚') : 'なし'],
@@ -1798,7 +1881,7 @@ function renderRuleDetailModal(){
     ['符計算/ツモ損', YN(r.fuCalculation)+' / '+YN(r.tsumoLoss)],
     ['喰いタン/後付け/ツモピン', YN(r.kuitanAri)+' / '+YN(r.atozukeAri)+' / '+YN(r.tsumoPinAri)],
     ['一発/裏ドラ/カン裏', YN(r.ippatsuAri)+' / '+YN(r.uradoraAri)+' / '+YN(r.kanUradoraAri)],
-    ['トビ終了', r.tobiAri ? ((r.tobiRule==='zero'?'0点で終了':'0点継続(-100以下)')+'・罰点'+r.tobiPenalty) : 'なし'],
+    ['トビ終了', r.tobiAri ? ((r.tobiRule==='zero'?'0点で終了':'0点継続(-100以下)')+'・罰符'+r.tobiPenalty) : 'なし'],
     ['赤ドラ', r.akaDoraEnabled ? `萬${r.akaDoraMan}/筒${r.akaDoraPin}/索${r.akaDoraSou}` : 'なし'],
     ['ノーテン罰符', r.notenPenaltyEnabled ? r.notenPenalty+'（積み棒1本あたり）' : 'なし'],
     ['フリテン', r.furitenAri ? (r.furitenOpenRequired==='required'?'オープン必要':'オープン不要') : 'なし'],
