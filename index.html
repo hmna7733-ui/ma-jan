@@ -714,10 +714,10 @@ function memberName(id){ const m=getMember(id); return m?m.name:'(削除済み)'
 function memberColor(id){ const m=getMember(id); return m?m.color:'#999'; }
 function yenText(point, rule){
   if(rule && rule.rateEnabled && rule.rate){
-    // rate は「1000点あたり◯円」を直接表す値（例：rate=100なら1000点=100円）
-    // point は「1000点単位」の最終ポイントなので、円 = point × rate
+    // rate は「1000点あたり◯P」を直接表す値（例：rate=100なら1000点=100P）
+    // point は「1000点単位」の最終ポイントなので、P = point × rate
     const yen = Math.round(point*rule.rate);
-    return ` <span class="small-note">(${sign(yen)}円)</span>`;
+    return ` <span class="small-note">(${sign(yen)}P)</span>`;
   }
   return '';
 }
@@ -755,8 +755,8 @@ function renderHome(){
   const hasOverride = !!getDailyOverride(todayStr(), rule.id);
   if(rule.rateEnabled || rule.chipEnabled){
     html += `<div class="row" style="gap:14px;margin-top:10px;flex-wrap:wrap;align-items:center">
-      ${rule.rateEnabled?`<span class="small-note">レート: 1000点＝${effRule.rate}円</span>`:''}
-      ${rule.chipEnabled?`<span class="small-note">チップ: ${effRule.chipValue}円/枚</span>`:''}
+      ${rule.rateEnabled?`<span class="small-note">レート: 1000点＝${effRule.rate}P</span>`:''}
+      ${rule.chipEnabled?`<span class="small-note">チップ: ${effRule.chipValue}P/枚</span>`:''}
       <button class="link-btn" onclick="Home.openRateOverride()">${hasOverride?'本日は変更中（編集）':'本日だけ変更する'}</button>
     </div>`;
   }
@@ -802,7 +802,7 @@ function renderHome(){
   if(rule.chipEnabled){
     const totals = computeChipTotals(todayStr(), {onlyUnsettled:true});
     const todayTransfers = DB.chipTx.filter(t=>t.date===todayStr() && t.type==='transfer' && !t.settlementId);
-    html += `<div class="card"><h3>🎫 本日のチップ（1枚${effRule.chipValue}円）</h3>`;
+    html += `<div class="card"><h3>🎫 本日のチップ（1枚${effRule.chipValue}P）</h3>`;
     if(UI.home.memberIds.length===0){
       html += `<div class="small-note">メンバーを選択すると表示されます</div>`;
     } else {
@@ -819,7 +819,7 @@ function renderHome(){
           <button class="hako-btn ${isNeg?'active':''}" onclick="ChipTracker.toggleFinalSign('${mid}')">－</button>
           <input type="text" inputmode="numeric" pattern="[0-9]*" value="${Math.abs(finalVal)}" style="width:70px;text-align:right" onchange="ChipTracker.setFinalAbs('${mid}', this.value)">
           <span class="small-note" style="width:22px">枚</span>
-          <span class="${yen>0?'pos':yen<0?'neg':''}" style="width:80px;text-align:right;font-weight:700">${sign(yen)}円</span>
+          <span class="${yen>0?'pos':yen<0?'neg':''}" style="width:80px;text-align:right;font-weight:700">${sign(yen)}P</span>
         </div>`;
       });
     }
@@ -920,9 +920,9 @@ function renderRateOverrideModal(){
     <div class="modal">
       <div class="modal-head"><h2>本日だけレート・チップ単価を変更</h2><button class="close-x" onclick="Home.closeRateOverride()">✕</button></div>
       <div class="small-note" style="margin-bottom:14px">ここで変更しても、ルール自体は変わりません。今日のこのルールの対局・精算だけに適用されます。</div>
-      ${rule.rateEnabled?`<div class="field-wrap"><label class="field">レート（1000点あたり円）</label>
+      ${rule.rateEnabled?`<div class="field-wrap"><label class="field">レート（1000点あたりP）</label>
         <input type="number" step="10" value="${f.rate}" oninput="Home.updateRateOverrideForm('rate', numOrZero(this.value))"></div>`:''}
-      ${rule.chipEnabled?`<div class="field-wrap"><label class="field">チップ単価（円/枚）</label>
+      ${rule.chipEnabled?`<div class="field-wrap"><label class="field">チップ単価（P/枚）</label>
         <input type="number" step="10" value="${f.chipValue}" oninput="Home.updateRateOverrideForm('chipValue', numOrZero(this.value))"></div>`:''}
       <div class="row" style="gap:8px;margin-top:8px">
         <button class="btn secondary grow" onclick="Home.resetRateOverride()">元のルールに戻す</button>
@@ -1272,7 +1272,7 @@ function settlementCardHtml(st){
       <td>${avatarHtml(mid,22)} ${esc(memberName(mid))}</td>
       <td class="${pm.scorePoint>0?'pos':pm.scorePoint<0?'neg':''}">${sign(Math.round(pm.scorePoint*10)/10)}</td>
       <td>${chipEnabled?((pm.chipCount>0?'+':'')+(pm.chipCount||0)+'枚'):'-'}</td>
-      <td class="${totalYen>0?'pos':totalYen<0?'neg':''}" style="font-weight:800">${(scoreYen!==null||chipEnabled)?sign(totalYen)+'円':'-'}</td>
+      <td class="${totalYen>0?'pos':totalYen<0?'neg':''}" style="font-weight:800">${(scoreYen!==null||chipEnabled)?sign(totalYen)+'P':'-'}</td>
     </tr>`;
   }).join('');
   const expanded = UI.expandedSettlementId===st.id;
@@ -1284,12 +1284,12 @@ function settlementCardHtml(st){
     </div>
     <div class="row wrap" style="gap:10px;margin-bottom:8px;align-items:center">
       ${editingRate ? `
-        ${rateEnabled?`<span class="small-note">レート: <input type="number" step="10" value="${rateUsed}" style="width:70px;display:inline-block" onchange="Settlement.updateRate('${st.id}', this.value)">円/1000点</span>`:''}
-        ${chipEnabled?`<span class="small-note">チップ: <input type="number" step="10" value="${chipValueUsed}" style="width:70px;display:inline-block" onchange="Settlement.updateChipValue('${st.id}', this.value)">円/枚</span>`:''}
+        ${rateEnabled?`<span class="small-note">レート: <input type="number" step="10" value="${rateUsed}" style="width:70px;display:inline-block" onchange="Settlement.updateRate('${st.id}', this.value)">P/1000点</span>`:''}
+        ${chipEnabled?`<span class="small-note">チップ: <input type="number" step="10" value="${chipValueUsed}" style="width:70px;display:inline-block" onchange="Settlement.updateChipValue('${st.id}', this.value)">P/枚</span>`:''}
         <button class="link-btn" onclick="Settlement.toggleRateEdit(null)">完了</button>
       ` : `
-        ${rateEnabled?`<span class="small-note">レート: ${rateUsed}円/1000点</span>`:''}
-        ${chipEnabled?`<span class="small-note">チップ: ${chipValueUsed}円/枚</span>`:''}
+        ${rateEnabled?`<span class="small-note">レート: ${rateUsed}P/1000点</span>`:''}
+        ${chipEnabled?`<span class="small-note">チップ: ${chipValueUsed}P/枚</span>`:''}
         ${(rateEnabled||chipEnabled)?`<button class="link-btn" onclick="Settlement.toggleRateEdit('${st.id}')">編集</button>`:''}
       `}
     </div>
@@ -1414,7 +1414,7 @@ const Settlement = {
     const mismatches = [];
     if(sessions.length>0 && Math.abs(scoreCheckTotal)>0.05) mismatches.push(`スコアの差分：${sign(Math.round(scoreCheckTotal*10)/10)}点`);
     if(rule.chipEnabled && Math.abs(chipCheckTotal)>0.01) mismatches.push(`チップ枚数の差分：${sign(chipCheckTotal)}枚`);
-    if((rule.rateEnabled||rule.chipEnabled) && Math.abs(moneyCheckTotal)>1) mismatches.push(`金額の差分：${sign(Math.round(moneyCheckTotal))}円`);
+    if((rule.rateEnabled||rule.chipEnabled) && Math.abs(moneyCheckTotal)>1) mismatches.push(`金額の差分：${sign(Math.round(moneyCheckTotal))}P`);
     if(mismatches.length){
       renderInfoModal('⚠️ ずれが発生しています！', `本来は合計が0になるはずですが、ズレがあります。\n${mismatches.join('\n')}\n対局結果やチップの入力に誤りがないかご確認のうえ、修正してからもう一度確定してください。`, '入力に戻る');
     } else {
@@ -1632,6 +1632,10 @@ function computeSettlementStats(memberId, pcFilter){
 function computeHeadToHead(memberId, pcFilter){
   pcFilter = pcFilter || 'all';
   const opp={};
+  const ensure=(oid)=>{ if(!opp[oid]) opp[oid]={games:0,win:0,lose:0,draw:0,scoreDiff:0,chipDiff:0,moneyDiff:0}; return opp[oid]; };
+
+  /* スコア差：各対局ごとに「勝ち組の取り分は負け組の損失から比例配分される」と考え、
+     同じ側（勝ち同士・負け同士）の差分は0、勝ち-負けの間だけ差分が生まれるようにする */
   DB.history.forEach(s=>{
     const rule=getRule(s.ruleId);
     if(pcFilter!=='all' && (!rule || rule.playerCount!==pcFilter)) return;
@@ -1639,14 +1643,25 @@ function computeHeadToHead(memberId, pcFilter){
     if(!me) return;
     s.players.forEach(p=>{
       if(p.memberId===memberId) return;
-      if(!opp[p.memberId]) opp[p.memberId]={games:0,win:0,lose:0,draw:0,oppScoreTotal:0,scoreDiff:0,chipDiff:0,moneyDiff:0};
-      const o=opp[p.memberId];
+      const o=ensure(p.memberId);
       o.games++;
       if(me.rank<p.rank) o.win++; else if(me.rank>p.rank) o.lose++; else o.draw++;
-      o.oppScoreTotal += p.point;
     });
+    const winners = s.players.filter(p=>p.point>0);
+    const losers = s.players.filter(p=>p.point<0);
+    const totalWin = winners.reduce((a,w)=>a+w.point,0);
+    if(totalWin>0){
+      winners.forEach(w=>{
+        losers.forEach(l=>{
+          const contribution = (w.point/totalWin) * (-l.point);
+          if(w.memberId===memberId){ ensure(l.memberId).scoreDiff += contribution; }
+          if(l.memberId===memberId){ ensure(w.memberId).scoreDiff -= contribution; }
+        });
+      });
+    }
   });
-  Object.values(opp).forEach(o=>{ o.scoreDiff = -o.oppScoreTotal; });
+
+  /* チップ差・金額差：同様の比例配分を精算表単位で計算 */
   DB.settlements.forEach(st=>{
     if(!st.memberIds.includes(memberId)) return;
     const rule=getRule(st.ruleId);
@@ -1654,17 +1669,38 @@ function computeHeadToHead(memberId, pcFilter){
       const pc = rule?rule.playerCount:st.memberIds.length;
       if(pc!==pcFilter) return;
     }
-    st.memberIds.forEach(oid=>{
-      if(oid===memberId) return;
-      if(!opp[oid]) opp[oid]={games:0,win:0,lose:0,draw:0,oppScoreTotal:0,scoreDiff:0,chipDiff:0,moneyDiff:0};
-      const o=opp[oid];
-      const pmOpp = st.perMember[oid] || {scorePoint:0,chipCount:0};
-      const oppChip = pmOpp.chipCount||0;
-      const oppScoreYen = st.rateEnabledUsed ? pmOpp.scorePoint*st.rateUsed : 0;
-      const oppChipYen = st.chipEnabledUsed ? oppChip*st.chipValueUsed : 0;
-      o.chipDiff += -oppChip;
-      o.moneyDiff += -(oppScoreYen+oppChipYen);
+    const values = st.memberIds.map(mid=>{
+      const pm = st.perMember[mid] || {scorePoint:0,chipCount:0};
+      const scoreYen = st.rateEnabledUsed ? pm.scorePoint*st.rateUsed : 0;
+      const chipYen = st.chipEnabledUsed ? (pm.chipCount||0)*st.chipValueUsed : 0;
+      return { mid, chipCount: pm.chipCount||0, money: scoreYen+chipYen };
     });
+    st.memberIds.forEach(oid=>{ if(oid!==memberId) ensure(oid); });
+
+    const winnersM = values.filter(v=>v.money>0);
+    const losersM = values.filter(v=>v.money<0);
+    const totalWinM = winnersM.reduce((a,w)=>a+w.money,0);
+    if(totalWinM>0){
+      winnersM.forEach(w=>{
+        losersM.forEach(l=>{
+          const contribution = (w.money/totalWinM)*(-l.money);
+          if(w.mid===memberId){ ensure(l.mid).moneyDiff += contribution; }
+          if(l.mid===memberId){ ensure(w.mid).moneyDiff -= contribution; }
+        });
+      });
+    }
+    const winnersC = values.filter(v=>v.chipCount>0);
+    const losersC = values.filter(v=>v.chipCount<0);
+    const totalWinC = winnersC.reduce((a,w)=>a+w.chipCount,0);
+    if(totalWinC>0){
+      winnersC.forEach(w=>{
+        losersC.forEach(l=>{
+          const contribution = (w.chipCount/totalWinC)*(-l.chipCount);
+          if(w.mid===memberId){ ensure(l.mid).chipDiff += contribution; }
+          if(l.mid===memberId){ ensure(w.mid).chipDiff -= contribution; }
+        });
+      });
+    }
   });
   return opp;
 }
@@ -1802,7 +1838,7 @@ function renderAnalysis(){
           </div>
           <div class="grow">
             <div class="small-note" style="margin-bottom:2px">通算収支</div>
-            <div class="${c.moneyTotal>0?'pos':c.moneyTotal<0?'neg':''}" style="font-weight:800;font-size:15px">${sign(Math.round(c.moneyTotal))}円</div>
+            <div class="${c.moneyTotal>0?'pos':c.moneyTotal<0?'neg':''}" style="font-weight:800;font-size:15px">${sign(Math.round(c.moneyTotal))}P</div>
           </div>
         </div>
       </div>`;
@@ -1822,7 +1858,7 @@ function renderAnalysis(){
           <div class="stat-box"><div class="v ${s.totalPoint>0?'pos':s.totalPoint<0?'neg':''}">${sign(Math.round(s.totalPoint*10)/10)}</div><div class="l">通算スコア</div></div>
           <div class="stat-box"><div class="v">${sign(Math.round(s.avgPoint*100)/100)}</div><div class="l">平均ポイント</div></div>
           <div class="stat-box"><div class="v ${c.chipCount>0?'pos':c.chipCount<0?'neg':''}">${sign(c.chipCount)}</div><div class="l">通算チップ枚数</div></div>
-          <div class="stat-box" style="grid-column:span 2"><div class="v ${c.moneyTotal>0?'pos':c.moneyTotal<0?'neg':''}">${sign(Math.round(c.moneyTotal))}円</div><div class="l">通算収支（精算より）</div></div>
+          <div class="stat-box" style="grid-column:span 2"><div class="v ${c.moneyTotal>0?'pos':c.moneyTotal<0?'neg':''}">${sign(Math.round(c.moneyTotal))}P</div><div class="l">通算収支（精算より）</div></div>
         </div>
         <div class="section-title">着順の割合</div>
         ${pieChartHtml(s.rankCount, s.n, s.maxRank)}
@@ -1849,7 +1885,7 @@ function renderAnalysis(){
             <td>${avatarHtml(oid,20)} ${esc(memberName(oid))}</td><td>${o.games}</td><td>${o.win}</td><td>${o.lose}</td><td>${o.draw}</td>
             <td class="${o.scoreDiff>0?'pos':o.scoreDiff<0?'neg':''}">${sign(Math.round(o.scoreDiff*10)/10)}</td>
             <td class="${o.chipDiff>0?'pos':o.chipDiff<0?'neg':''}">${sign(o.chipDiff)}枚</td>
-            <td class="${o.moneyDiff>0?'pos':o.moneyDiff<0?'neg':''}">${sign(Math.round(o.moneyDiff))}円</td>
+            <td class="${o.moneyDiff>0?'pos':o.moneyDiff<0?'neg':''}">${sign(Math.round(o.moneyDiff))}P</td>
           </tr>`;
         });
         html+=`</tbody></table>
@@ -1915,7 +1951,8 @@ function renderSettings(){
         ${ruleNames.length?`<div class="small-note" style="margin:4px 0 0 38px">参加ルール：${ruleNames.map(esc).join('・')}</div>`:`<div class="small-note" style="margin:4px 0 0 38px">参加ルール：全ルール共通</div>`}
       </div>`;
     });
-    html+=`</div><button class="btn block" onclick="Settings.newMember()">＋ メンバーを追加</button>`;
+    html+=`</div><button class="btn block" onclick="Settings.newMember()">＋ メンバーを追加</button>
+    <button class="btn ghost block" style="margin-top:8px" onclick="Settings.openMergeMembers()">🔗 同一人物のメンバーを統合</button>`;
   } else {
     if(currentUser){
       html+=`<div class="card" style="text-align:center">
@@ -1966,6 +2003,68 @@ const Settings = {
       DB.members=DB.members.filter(m=>m.id!==id);
       persist('members'); render();
     }, '削除する');
+  },
+  openMergeMembers(){
+    if(DB.members.length<2){ renderInfoModal('メンバーが足りません','統合するには2人以上のメンバーが必要です。'); return; }
+    UI.mergeForm = { primaryId: DB.members[0].id, mergeIds: [] };
+    renderMergeMembersModal();
+  },
+  updateMergePrimary(id){
+    UI.mergeForm.primaryId = id;
+    UI.mergeForm.mergeIds = UI.mergeForm.mergeIds.filter(x=>x!==id);
+    renderMergeMembersModal();
+  },
+  toggleMergeTarget(id){
+    const idx = UI.mergeForm.mergeIds.indexOf(id);
+    if(idx>=0) UI.mergeForm.mergeIds.splice(idx,1); else UI.mergeForm.mergeIds.push(id);
+    renderMergeMembersModal();
+  },
+  closeMergeMembers(){ UI.mergeForm=null; document.getElementById('modalRoot').innerHTML=''; },
+  confirmMerge(){
+    const { primaryId, mergeIds } = UI.mergeForm;
+    if(!primaryId || mergeIds.length===0){ renderInfoModal('選択が足りません','残すメンバーと、統合するメンバーを1人以上選んでください。'); return; }
+    const names = mergeIds.map(id=>memberName(id)).join('・');
+    showConfirmModal('メンバーを統合しますか？', `「${names}」のデータを「${memberName(primaryId)}」に統合します。統合されるメンバーは削除され、元に戻せません。`, ()=>{
+      Settings.executeMerge(primaryId, mergeIds);
+    }, '統合する');
+  },
+  executeMerge(primaryId, mergeIds){
+    const mergeSet = new Set(mergeIds);
+    DB.history.forEach(s=>{
+      s.players.forEach(p=>{ if(mergeSet.has(p.memberId)) p.memberId=primaryId; });
+    });
+    DB.chipTx.forEach(t=>{
+      if(t.memberId && mergeSet.has(t.memberId)) t.memberId=primaryId;
+      if(t.fromId && mergeSet.has(t.fromId)) t.fromId=primaryId;
+      if(t.toId && mergeSet.has(t.toId)) t.toId=primaryId;
+    });
+    DB.settlements.forEach(st=>{
+      st.memberIds = st.memberIds.map(mid=> mergeSet.has(mid) ? primaryId : mid);
+      const seen = {}; const newMemberIds = [];
+      st.memberIds.forEach(mid=>{ if(!seen[mid]){ seen[mid]=true; newMemberIds.push(mid); } });
+      st.memberIds = newMemberIds;
+      const newPerMember = {};
+      Object.entries(st.perMember||{}).forEach(([mid,val])=>{
+        const targetId = mergeSet.has(mid) ? primaryId : mid;
+        if(!newPerMember[targetId]) newPerMember[targetId] = { scorePoint:0, chipCount:0 };
+        newPerMember[targetId].scorePoint += val.scorePoint||0;
+        newPerMember[targetId].chipCount += val.chipCount||0;
+      });
+      st.perMember = newPerMember;
+    });
+    const primary = DB.members.find(m=>m.id===primaryId);
+    mergeIds.forEach(mid=>{
+      const m = DB.members.find(x=>x.id===mid);
+      if(m && m.ruleIds && m.ruleIds.length && primary){
+        primary.ruleIds = Array.from(new Set([...(primary.ruleIds||[]), ...m.ruleIds]));
+      }
+    });
+    DB.members = DB.members.filter(m=>!mergeSet.has(m.id));
+    persist('members'); persist('history'); persist('chipTx'); persist('settlements');
+    UI.mergeForm=null;
+    document.getElementById('modalRoot').innerHTML='';
+    render();
+    renderInfoModal('統合しました','選択したメンバーのデータを統合しました。');
   },
   updateMemberDraft(key,val){ UI.memberDraft[key]=val; },
   saveMember(){
@@ -2158,6 +2257,31 @@ function updateAxisDisplay(){
   });
 }
 
+function renderMergeMembersModal(){
+  if(!UI.mergeForm){ document.getElementById('modalRoot').innerHTML=''; return; }
+  const f = UI.mergeForm;
+  const html = `
+  <div class="modal-overlay" onclick="if(event.target===this) Settings.closeMergeMembers()">
+    <div class="modal">
+      <div class="modal-head"><h2>同一人物のメンバーを統合</h2><button class="close-x" onclick="Settings.closeMergeMembers()">✕</button></div>
+      <div class="small-note" style="margin-bottom:14px">例えば「はやと」「隼人」「はやさん」のように、表記ゆれで別々に登録されてしまった同じ人のデータを1つにまとめます。</div>
+      <div class="field-wrap"><label class="field">残すメンバー（統合先）</label>
+        <select onchange="Settings.updateMergePrimary(this.value)">
+          ${DB.members.map(m=>`<option value="${m.id}" ${f.primaryId===m.id?'selected':''}>${esc(m.name)}</option>`).join('')}
+        </select>
+      </div>
+      <div class="field-wrap"><label class="field">統合するメンバー（複数選択可・削除されます）</label>
+        <div class="row wrap">
+          ${DB.members.filter(m=>m.id!==f.primaryId).map(m=>`<div class="chip ${f.mergeIds.includes(m.id)?'selected':''}" onclick="Settings.toggleMergeTarget('${m.id}')">${esc(m.name)}</div>`).join('')}
+        </div>
+      </div>
+      <div class="hint">統合すると、対局履歴・チップ・精算表のデータはすべて「残すメンバー」にまとめられ、統合されたメンバーは削除されます。</div>
+      <button class="btn block" style="margin-top:12px" onclick="Settings.confirmMerge()">統合する</button>
+    </div>
+  </div>`;
+  document.getElementById('modalRoot').innerHTML = html;
+}
+
 function renderMemberModal(){
   const d=UI.memberDraft;
   if(!d){ document.getElementById('modalRoot').innerHTML=''; return; }
@@ -2212,20 +2336,20 @@ function renderRuleModal(){
         </div></div>
 
 
-      ${toggleRow('レート換算','1000点あたりの円換算を表示', d.rateEnabled, "Settings.toggleDraft('rateEnabled')",
+      ${toggleRow('レート換算','1000点あたりのP換算を表示', d.rateEnabled, "Settings.toggleDraft('rateEnabled')",
         `<div class="field-wrap">
           <div class="preset-row">
-            ${RATE_PRESETS.map(v=>`<button class="preset-btn ${d.rate===v?'selected':''}" style="${d.rate===v?'background:var(--accent);color:#fff;border-color:transparent':''}" onclick="Settings.applyRatePreset(${v})">1000点＝${v}円</button>`).join('')}
+            ${RATE_PRESETS.map(v=>`<button class="preset-btn ${d.rate===v?'selected':''}" style="${d.rate===v?'background:var(--accent);color:#fff;border-color:transparent':''}" onclick="Settings.applyRatePreset(${v})">1000点＝${v}P</button>`).join('')}
           </div>
-          <label class="field" style="margin-top:6px">レート（1000点あたりの円換算・手入力も可）</label>
+          <label class="field" style="margin-top:6px">レート（1000点あたりのP換算・手入力も可）</label>
           <input type="number" step="10" value="${d.rate}" ${d.rateEnabled?'':'disabled'} oninput="Settings.updateDraft('rate', numOrZero(this.value))">
         </div>`)}
 
       ${toggleRow('チップ（祝儀）','1日の最後にまとめて枚数を入力する想定。途中の貸し借りも記録できます', d.chipEnabled, "Settings.toggleDraft('chipEnabled')",
         `<div class="field-wrap">
-          <label class="field">チップ1枚の価値（円）</label>
+          <label class="field">チップ1枚の価値（P）</label>
           <div class="preset-row">
-            ${CHIP_PRESETS.map(v=>`<button class="preset-btn ${d.chipValue===v?'selected':''}" style="${d.chipValue===v?'background:var(--accent);color:#fff;border-color:transparent':''}" onclick="Settings.applyChipPreset(${v})">${v}円</button>`).join('')}
+            ${CHIP_PRESETS.map(v=>`<button class="preset-btn ${d.chipValue===v?'selected':''}" style="${d.chipValue===v?'background:var(--accent);color:#fff;border-color:transparent':''}" onclick="Settings.applyChipPreset(${v})">${v}P</button>`).join('')}
           </div>
           <input type="number" step="10" value="${d.chipValue}" ${d.chipEnabled?'':'disabled'} oninput="Settings.updateDraft('chipValue', numOrZero(this.value))">
           <div class="hint" style="margin-bottom:8px">ホーム画面の「本日のチップ」で、対局中の貸し借りや最終枚数を記録できます。</div>
@@ -2327,7 +2451,7 @@ function renderRuleModal(){
               <input type="number" step="1" value="${d.babaAmount}" ${d.babaEnabled?'':'disabled'} oninput="Settings.updateDraft('babaAmount', numOrZero(this.value))">
             </div>
           </div>
-          <div class="hint">例：2着から5に設定すると、2着以下の全員から5点（レートが1000点=100円なら500円相当）ずつ差し引き、場代として集計します。</div>
+          <div class="hint">例：2着から5に設定すると、2着以下の全員から5点（レートが1000点=100Pなら500P相当）ずつ差し引き、場代として集計します。</div>
         </div>`)}
 
       <div class="section-title">点数計算</div>
@@ -2560,8 +2684,8 @@ function renderRuleDetailModal(){
   const rows = [
     ['人数', r.playerCount+'人打ち'],
     ['参加メンバー', (()=>{ const ms=DB.members.filter(m=>!m.ruleIds||m.ruleIds.length===0||m.ruleIds.includes(r.id)); return ms.length? ms.map(m=>esc(m.name)).join('・') : 'なし'; })()],
-    ['レート', r.rateEnabled ? ('1000点＝'+r.rate+'円') : 'なし'],
-    ['チップ', r.chipEnabled ? (r.chipValue+'円/枚・発動条件:'+({none:'なし',riichi:'リーチ祝儀',menzen:'面前祝儀',naki:'鳴き祝儀'}[r.chipCondition])) : 'なし'],
+    ['レート', r.rateEnabled ? ('1000点＝'+r.rate+'P') : 'なし'],
+    ['チップ', r.chipEnabled ? (r.chipValue+'P/枚・発動条件:'+({none:'なし',riichi:'リーチ祝儀',menzen:'面前祝儀',naki:'鳴き祝儀'}[r.chipCondition])) : 'なし'],
     ['役満祝儀', r.chipEnabled ? ('ツモ'+r.yakumanTsumoChip+'枚オール/ロン'+r.yakumanRonChip+'枚') : 'なし'],
     ['対局形式', r.gameType==='hanchan'?'半荘戦':'東風戦'],
     ['開始点/返し点', r.startPoints+' / '+r.returnPoints],
