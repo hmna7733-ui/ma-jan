@@ -359,11 +359,12 @@ function queueCloudPush(immediate=false){
 }
 
 function doLogout(){
-  if(!fbAuth){ alert('現在ログイン機能が使えない状態です。'); return; }
-  if(!confirm('ログアウトしますか？この端末のキャッシュも削除されます。')) return;
-  localStorage.removeItem(LS_KEY);
-  localStorage.removeItem(SKIP_KEY);
-  fbAuth.signOut();
+  if(!fbAuth){ renderInfoModal('ログイン機能が使えません','現在ログイン機能が使えない状態です。'); return; }
+  showConfirmModal('ログアウトしますか？', 'ログアウトすると、この端末のキャッシュも削除されます。', ()=>{
+    localStorage.removeItem(LS_KEY);
+    localStorage.removeItem(SKIP_KEY);
+    fbAuth.signOut();
+  }, 'ログアウトする');
 }
 
 function showGate(){
@@ -445,6 +446,21 @@ const numOrZero = (v)=>{ const n=parseFloat(v); return isNaN(n)?0:n; };
 const PALETTE = ['#e07a5f','#3d8bd4','#f2b134','#6a994e','#9d4edd','#e6538c','#2a9d8f','#c65911','#4a6fa5','#8d6a9f'];
 function esc(s){ return String(s??'').replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 
+/* Firestoreのエラー内容を分かりやすい日本語に変換（転送・同期系の失敗診断用） */
+function firestoreErrorMessage(e){
+  const code = e && e.code;
+  if(code === 'permission-denied'){
+    return 'Firestoreのセキュリティルールでこの操作が許可されていません。「mahjong_shared_rules」「mahjong_shared_scores」コレクションへの読み書きが、ログイン済みユーザー（request.auth != null）に許可されているか、Firebaseコンソールでご確認ください。';
+  }
+  if(code === 'unavailable' || code === 'deadline-exceeded'){
+    return '通信環境が不安定なようです。電波の良い場所でもう一度お試しください。';
+  }
+  if(code === 'not-found'){
+    return 'データが見つかりませんでした。コードをご確認ください。';
+  }
+  return (e && (e.message || code)) ? ('エラー内容：'+(e.message||code)) : '原因不明のエラーが発生しました。';
+}
+
 /* ============ データ層 ============ */
 let DB = { rules:[], members:[], history:[], chipTx:[] };
 try{
@@ -465,6 +481,7 @@ function ensureRuleDefaults(r){
   const def = {
     okaEnabled:false, oka:0, tobiAri:true, tobiPenalty:0, tobiRule:'zero',
     kuitanAri:true, atozukeAri:true, akaDoraEnabled:true,
+    stick500Enabled:true, stick100Enabled:true,
     ippatsuAri:true, uradoraAri:true, kanUradoraAri:true,
     notenPenaltyEnabled:true,
     furitenAri:false, furitenOpenRequired:'not_required',
@@ -706,8 +723,10 @@ const InputForm = {
   open(){
     UI.editingHistoryId=null;
     const rule=getRule(UI.home.ruleId);
+    const suffixLen = (rule.stick500Enabled || rule.stick100Enabled) ? 2 : 3;
+    const suffix = '0'.repeat(suffixLen);
     UI.formEntries={};
-    UI.home.memberIds.forEach(id=>UI.formEntries[id]='');
+    UI.home.memberIds.forEach(id=>UI.formEntries[id]=suffix);
     UI.formRuleId=rule.id;
     UI.formMemberIds=[...UI.home.memberIds];
     UI.showInputForm=true;
@@ -724,12 +743,21 @@ const InputForm = {
     UI.showInputForm=true;
     renderModal();
   },
-  updateScore(mid,val){ UI.formEntries[mid]=val; renderModal(true); },
+  updateScore(mid,val){
+    const cleaned = val.replace(/[^0-9]/g,'');
+    UI.formEntries[mid]=cleaned;
+    const el = document.getElementById('score-input-'+mid);
+    if(el && el.value !== cleaned) el.value = cleaned;
+    updateScoreDiffDisplay();
+  },
   close(){ UI.showInputForm=false; UI.editingHistoryId=null; renderModal(); },
+  requestClose(){
+    showConfirmModal('保存せずに閉じますか？','入力した内容は保存されません。閉じてもよいですか？', ()=>{ InputForm.close(); }, '閉じる', ()=>{ renderModal(); });
+  },
   save(){
     const rule=getRule(UI.formRuleId);
     const entries=UI.formMemberIds.map(mid=>({memberId:mid, rawScore:numOrZero(UI.formEntries[mid])}));
-    if(entries.some(e=>UI.formEntries[e.memberId]==='')){ alert('全員分の最終持ち点を入力してください'); return; }
+    if(entries.some(e=>UI.formEntries[e.memberId]==='')){ renderInfoModal('入力が足りません','全員分の最終持ち点を入力してください。'); return; }
     const computed=computeSession(rule, entries);
     const players=computed.map(c=>({memberId:c.memberId, rawScore:c.rawScore, rank:c.rank, point:c.point}));
     if(UI.editingHistoryId){
@@ -744,6 +772,20 @@ const InputForm = {
   }
 };
 
+/* 合計・差分表示だけをDOM直接更新（入力中に全体を再描画してフォーカスが外れるのを防ぐ） */
+function updateScoreDiffDisplay(){
+  const rule=getRule(UI.formRuleId);
+  if(!rule) return;
+  const expectedTotal=rule.startPoints*UI.formMemberIds.length;
+  const currentTotal=UI.formMemberIds.reduce((a,mid)=>a+numOrZero(UI.formEntries[mid]),0);
+  const diff=currentTotal-expectedTotal;
+  const el=document.getElementById('scoreDiffHint');
+  if(el){
+    el.innerHTML = `合計: ${currentTotal} 点 / 規定合計: ${expectedTotal} 点
+      <span class="${diff===0?'diff-ok':'diff-bad'}"> (${diff===0?'一致':'差分 '+sign(diff)})</span>`;
+  }
+}
+
 function renderModal(scoreOnly){
   if(!UI.showInputForm){ document.getElementById('modalRoot').innerHTML=''; return; }
   const rule=getRule(UI.formRuleId);
@@ -751,16 +793,16 @@ function renderModal(scoreOnly){
   const currentTotal=UI.formMemberIds.reduce((a,mid)=>a+numOrZero(UI.formEntries[mid]),0);
   const diff=currentTotal-expectedTotal;
   const html=`
-  <div class="modal-overlay" onclick="if(event.target===this) InputForm.close()">
+  <div class="modal-overlay" onclick="if(event.target===this) InputForm.requestClose()">
     <div class="modal">
-      <div class="modal-head"><h2>${UI.editingHistoryId?'対局結果を編集':'対局結果を記録'}</h2><button class="close-x" onclick="InputForm.close()">✕</button></div>
+      <div class="modal-head"><h2>${UI.editingHistoryId?'対局結果を編集':'対局結果を記録'}</h2><button class="close-x" onclick="InputForm.requestClose()">✕</button></div>
       <div class="small-note" style="margin-bottom:12px">ルール: ${esc(rule.name)}（返し点 ${rule.returnPoints} / 開始点 ${rule.startPoints}）</div>
       ${UI.formMemberIds.map(mid=>`
         <div class="field-wrap">
           <label class="field">${avatarHtml(mid,20)} ${esc(memberName(mid))} の最終持ち点</label>
-          <input type="number" step="100" inputmode="numeric" value="${UI.formEntries[mid]}" oninput="InputForm.updateScore('${mid}', this.value)">
+          <input type="text" id="score-input-${mid}" inputmode="numeric" pattern="[0-9]*" value="${UI.formEntries[mid]}" onfocus="this.setSelectionRange(0,0)" oninput="InputForm.updateScore('${mid}', this.value)">
         </div>`).join('')}
-      <div class="hint">合計: ${currentTotal} 点 / 規定合計: ${expectedTotal} 点
+      <div class="hint" id="scoreDiffHint">合計: ${currentTotal} 点 / 規定合計: ${expectedTotal} 点
         <span class="${diff===0?'diff-ok':'diff-bad'}"> (${diff===0?'一致':'差分 '+sign(diff)})</span>
       </div>
       <button class="btn block" style="margin-top:16px" onclick="InputForm.save()">保存する</button>
@@ -799,7 +841,7 @@ const ChipTracker = {
   updateForm(key,val){ UI.chipForm[key]=val; },
   saveAdjust(){
     const amt=numOrZero(UI.chipForm.amount);
-    if(!UI.chipForm.memberId || amt===0){ alert('メンバーと0以外の増減枚数を入力してください'); return; }
+    if(!UI.chipForm.memberId || amt===0){ renderInfoModal('入力が足りません','メンバーと0以外の増減枚数を入力してください。'); return; }
     DB.chipTx.push({ id:uid(), date:todayStr(), type:'adjust', memberId:UI.chipForm.memberId, amount:amt, memo:UI.chipForm.memo||'' });
     persist('chipTx');
     UI.chipModal=null; document.getElementById('modalRoot').innerHTML='';
@@ -808,7 +850,7 @@ const ChipTracker = {
   saveTransfer(){
     const amt=numOrZero(UI.chipForm.amount);
     if(!UI.chipForm.fromId || !UI.chipForm.toId || UI.chipForm.fromId===UI.chipForm.toId || amt<=0){
-      alert('渡す人・受け取る人（別々）・1以上の枚数を入力してください'); return;
+      renderInfoModal('入力が足りません','渡す人・受け取る人（別々）・1以上の枚数を入力してください。'); return;
     }
     DB.chipTx.push({ id:uid(), date:todayStr(), type:'transfer', fromId:UI.chipForm.fromId, toId:UI.chipForm.toId, amount:amt });
     persist('chipTx');
@@ -816,9 +858,10 @@ const ChipTracker = {
     render();
   },
   remove(txId){
-    if(!confirm('この記録を削除しますか？')) return;
-    DB.chipTx = DB.chipTx.filter(t=>t.id!==txId);
-    persist('chipTx'); render();
+    showConfirmModal('削除しますか？', 'このチップの記録を削除しますか？', ()=>{
+      DB.chipTx = DB.chipTx.filter(t=>t.id!==txId);
+      persist('chipTx'); render();
+    }, '削除する');
   }
 };
 
@@ -876,9 +919,10 @@ function renderHistory(){
 }
 const History = {
   remove(id){
-    if(!confirm('この対局結果を削除しますか？')) return;
-    DB.history = DB.history.filter(s=>s.id!==id);
-    persist('history'); render();
+    showConfirmModal('削除しますか？', 'この対局結果を削除しますか？この操作は元に戻せません。', ()=>{
+      DB.history = DB.history.filter(s=>s.id!==id);
+      persist('history'); render();
+    }, '削除する');
   }
 };
 
@@ -1058,14 +1102,15 @@ const Settings = {
     renderMemberModal();
   },
   removeMember(id){
-    if(!confirm('このメンバーを削除しますか？（過去の履歴データは残ります）')) return;
-    DB.members=DB.members.filter(m=>m.id!==id);
-    persist('members'); render();
+    showConfirmModal('削除しますか？', 'このメンバーを削除しますか？（過去の履歴データは残ります）', ()=>{
+      DB.members=DB.members.filter(m=>m.id!==id);
+      persist('members'); render();
+    }, '削除する');
   },
   updateMemberDraft(key,val){ UI.memberDraft[key]=val; },
   saveMember(){
     const d=UI.memberDraft;
-    if(!d.name || !d.name.trim()){ alert('名前を入力してください'); return; }
+    if(!d.name || !d.name.trim()){ renderInfoModal('名前が未入力です','名前を入力してください。'); return; }
     d.name=d.name.trim();
     if(UI.editingMemberId){
       const idx=DB.members.findIndex(m=>m.id===UI.editingMemberId);
@@ -1079,6 +1124,9 @@ const Settings = {
     render();
   },
   closeMemberModal(){ UI.memberDraft=null; document.getElementById('modalRoot').innerHTML=''; },
+  requestCloseMemberModal(){
+    showConfirmModal('保存せずに閉じますか？','入力した内容は保存されません。閉じてもよいですか？', ()=>{ Settings.closeMemberModal(); }, '閉じる', ()=>{ renderMemberModal(); });
+  },
 
   newRule(){
     UI.editingRuleId=null;
@@ -1090,11 +1138,15 @@ const Settings = {
   },
   editRule(id){ UI.editingRuleId=id; UI.ruleDraft=ensureRuleDefaults(JSON.parse(JSON.stringify(getRule(id)))); renderRuleModal(); },
   removeRule(id){
-    if(!confirm('このルールを削除しますか？（このルールを使った履歴は残ります）')) return;
-    DB.rules=DB.rules.filter(r=>r.id!==id);
-    persist('rules'); render();
+    showConfirmModal('削除しますか？', 'このルールを削除しますか？（このルールを使った履歴は残ります）', ()=>{
+      DB.rules=DB.rules.filter(r=>r.id!==id);
+      persist('rules'); render();
+    }, '削除する');
   },
   closeRuleModal(){ UI.ruleDraft=null; document.getElementById('modalRoot').innerHTML=''; },
+  requestCloseRuleModal(){
+    showConfirmModal('保存せずに閉じますか？','入力した内容は保存されません。閉じてもよいですか？', ()=>{ Settings.closeRuleModal(); }, '閉じる', ()=>{ renderRuleModal(); });
+  },
   setPlayerCount(n){
     n=parseInt(n);
     const d=UI.ruleDraft;
@@ -1197,16 +1249,17 @@ const Settings = {
       renderShareCodeModal();
     }catch(e){
       console.error(e);
-      renderInfoModal('転送に失敗しました','転送用コードの作成に失敗しました。通信環境をご確認ください。');
+      renderInfoModal('転送に失敗しました', firestoreErrorMessage(e));
     }
   },
   closeShareCode(){ UI.shareCode=null; document.getElementById('modalRoot').innerHTML=''; },
 
   forceSync(){
     if(!fbAuth || !currentUser){ renderInfoModal('ログインが必要です','クラウド同期にはログインが必要です。'); return; }
-    if(!confirm('この端末のデータでクラウドを上書きします。他の端末での未同期の変更があれば消える場合があります。続行しますか？')) return;
-    queueCloudPush(true);
-    renderInfoModal('同期を開始しました','この端末のデータをクラウドに送信しています。');
+    showConfirmModal('クラウドに上書き保存しますか？', 'この端末のデータでクラウドを上書きします。他の端末での未同期の変更があれば消える場合があります。', ()=>{
+      queueCloudPush(true);
+      renderInfoModal('同期を開始しました','この端末のデータをクラウドに送信しています。');
+    }, '上書き保存する');
   },
 
   openReceiveRuleModal(){
@@ -1232,7 +1285,7 @@ const Settings = {
       render();
     }catch(e){
       console.error(e);
-      renderInfoModal('受け取りに失敗しました','コードと通信環境をご確認ください。');
+      renderInfoModal('受け取りに失敗しました', firestoreErrorMessage(e));
     }
   }
 };
@@ -1252,9 +1305,9 @@ function renderMemberModal(){
   const d=UI.memberDraft;
   if(!d){ document.getElementById('modalRoot').innerHTML=''; return; }
   const html=`
-  <div class="modal-overlay" onclick="if(event.target===this) Settings.closeMemberModal()">
+  <div class="modal-overlay" onclick="if(event.target===this) Settings.requestCloseMemberModal()">
     <div class="modal">
-      <div class="modal-head"><h2>${UI.editingMemberId?'メンバーを編集':'メンバーを追加'}</h2><button class="close-x" onclick="Settings.closeMemberModal()">✕</button></div>
+      <div class="modal-head"><h2>${UI.editingMemberId?'メンバーを編集':'メンバーを追加'}</h2><button class="close-x" onclick="Settings.requestCloseMemberModal()">✕</button></div>
       <div class="field-wrap"><label class="field">名前</label>
         <input type="text" value="${esc(d.name)}" oninput="Settings.updateMemberDraft('name', this.value)" placeholder="例：アカギ"></div>
       <div class="field-wrap"><label class="field">カラー</label>
@@ -1279,9 +1332,9 @@ function renderRuleModal(){
   const d=UI.ruleDraft;
   if(!d){ document.getElementById('modalRoot').innerHTML=''; return; }
   const html=`
-  <div class="modal-overlay" onclick="if(event.target===this) Settings.closeRuleModal()">
+  <div class="modal-overlay" onclick="if(event.target===this) Settings.requestCloseRuleModal()">
     <div class="modal">
-      <div class="modal-head"><h2>ルール設定</h2><button class="close-x" onclick="Settings.closeRuleModal()">✕</button></div>
+      <div class="modal-head"><h2>ルール設定</h2><button class="close-x" onclick="Settings.requestCloseRuleModal()">✕</button></div>
       <div class="small-note" style="margin-bottom:12px">プロの現場で使われる代表的な項目を並べています。オン/オフで使う項目だけ入力できます。不要な項目はオフのままでOK、後からいつでも編集できます。</div>
 
       <div class="section-title">基本設定</div>
@@ -1341,6 +1394,8 @@ function renderRuleModal(){
         <div class="field-wrap grow"><label class="field">返し点（精算基準点）</label>
           <input type="number" step="1000" value="${d.returnPoints}" oninput="Settings.updateReturnPoints(this.value)"></div>
       </div>
+      ${toggleRow('500点棒を使う','点棒に500点棒を含めるか', d.stick500Enabled, "Settings.toggleDraft('stick500Enabled')")}
+      ${toggleRow('100点棒を使う','点棒に100点棒を含めるか', d.stick100Enabled, "Settings.toggleDraft('stick100Enabled')")}
 
       <div class="section-title">進行ルール</div>
       <div class="field-wrap"><label class="field">連チャン方式</label>
@@ -1577,6 +1632,32 @@ function renderInfoModal(title, message){
     </div>`;
 }
 function closeInfoModal(){ document.getElementById('modalRoot').innerHTML=''; }
+
+/* 汎用の確認モーダル（削除・ログアウトなど破壊的操作の確認用。confirm()の代わりに使用） */
+let _confirmModalCallback = null;
+let _confirmModalCancelCallback = null;
+function showConfirmModal(title, message, onConfirm, confirmLabel, onCancel){
+  _confirmModalCallback = onConfirm;
+  _confirmModalCancelCallback = onCancel || null;
+  document.getElementById('modalRoot').innerHTML = `
+    <div class="modal-overlay" onclick="if(event.target===this) cancelConfirmModal()">
+      <div class="modal">
+        <div class="modal-head"><h2>${esc(title)}</h2><button class="close-x" onclick="cancelConfirmModal()">✕</button></div>
+        <div class="small-note">${esc(message)}</div>
+        <div class="row" style="margin-top:16px;gap:8px">
+          <button class="btn secondary grow" onclick="cancelConfirmModal()">キャンセル</button>
+          <button class="btn danger grow" onclick="runConfirmModal()">${esc(confirmLabel||'実行する')}</button>
+        </div>
+      </div>
+    </div>`;
+}
+function closeConfirmModal(){ _confirmModalCallback=null; _confirmModalCancelCallback=null; document.getElementById('modalRoot').innerHTML=''; }
+function cancelConfirmModal(){
+  const cb=_confirmModalCancelCallback;
+  _confirmModalCallback=null; _confirmModalCancelCallback=null;
+  if(cb) cb(); else document.getElementById('modalRoot').innerHTML='';
+}
+function runConfirmModal(){ const cb=_confirmModalCallback; closeConfirmModal(); if(cb) cb(); }
 function renderRuleDetailModal(){
   if(!UI.ruleDetailId){ document.getElementById('modalRoot').innerHTML=''; return; }
   const r = getRule(UI.ruleDetailId);
@@ -1639,7 +1720,7 @@ function renderShareCodeModal(){
       <div class="modal-head"><h2>ルールを転送</h2><button class="close-x" onclick="Settings.closeShareCode()">✕</button></div>
       <div class="small-note" style="margin-bottom:14px">下のコードを友達に伝えてください。友達側の「設定→ルール管理→コードでルールを受け取る」からこのコードを入力すると、そのアカウントにルールがコピーされます。</div>
       <div style="text-align:center;font-size:32px;font-weight:800;letter-spacing:4px;color:var(--accent-dark);background:var(--accent-light);border-radius:14px;padding:20px 10px;margin-bottom:14px">${UI.shareCode}</div>
-      <button class="btn block" onclick="navigator.clipboard && navigator.clipboard.writeText('${UI.shareCode}'); alert('コピーしました')">コードをコピー</button>
+      <button class="btn block" onclick="navigator.clipboard && navigator.clipboard.writeText('${UI.shareCode}'); renderInfoModal('コピーしました','コードをクリップボードにコピーしました。')">コードをコピー</button>
     </div>
   </div>`;
   document.getElementById('modalRoot').innerHTML=html;
@@ -1681,7 +1762,7 @@ const ScoreShare = {
       });
       UI.scoreShareCode = code;
       renderScoreShareCodeModal();
-    }catch(e){ console.error(e); renderInfoModal('送信に失敗しました','送信用コードの作成に失敗しました。通信環境をご確認ください。'); }
+    }catch(e){ console.error(e); renderInfoModal('送信に失敗しました', firestoreErrorMessage(e)); }
   },
   closeScoreShareCode(){ UI.scoreShareCode=null; document.getElementById('modalRoot').innerHTML=''; },
   openReceiveModal(){ UI.receiveScoreCode=''; renderReceiveScoreModal(); },
@@ -1714,7 +1795,7 @@ const ScoreShare = {
       UI.receiveScoreCode=null;
       renderInfoModal('受け取りました','スコアを受け取りました。');
       render();
-    }catch(e){ console.error(e); renderInfoModal('受け取りに失敗しました','コードと通信環境をご確認ください。'); }
+    }catch(e){ console.error(e); renderInfoModal('受け取りに失敗しました', firestoreErrorMessage(e)); }
   }
 };
 
@@ -1726,7 +1807,7 @@ function renderScoreShareCodeModal(){
       <div class="modal-head"><h2>スコアを送る</h2><button class="close-x" onclick="ScoreShare.closeScoreShareCode()">✕</button></div>
       <div class="small-note" style="margin-bottom:14px">下のコードを相手に伝えてください。相手側の「設定→アカウント→コードでスコアを受け取る」からこのコードを入力すると、そのアカウントの履歴に追加されます（メンバー名が一致しない場合は新規メンバーとして追加されます）。</div>
       <div style="text-align:center;font-size:32px;font-weight:800;letter-spacing:4px;color:var(--accent-dark);background:var(--accent-light);border-radius:14px;padding:20px 10px;margin-bottom:14px">${UI.scoreShareCode}</div>
-      <button class="btn block" onclick="navigator.clipboard && navigator.clipboard.writeText('${UI.scoreShareCode}'); alert('コピーしました')">コードをコピー</button>
+      <button class="btn block" onclick="navigator.clipboard && navigator.clipboard.writeText('${UI.scoreShareCode}'); renderInfoModal('コピーしました','コードをクリップボードにコピーしました。')">コードをコピー</button>
     </div>
   </div>`;
   document.getElementById('modalRoot').innerHTML=html;
