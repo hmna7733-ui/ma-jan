@@ -527,7 +527,7 @@ function firestoreErrorMessage(e, collectionName){
 /* ============ データ層 ============ */
 function ensureMemberDefaults(m){
   if(m.isSelf===undefined) m.isSelf=false;
-  if(!m.groupIds) m.groupIds=[];
+  if(!m.ruleIds) m.ruleIds=[];
   return m;
 }
 
@@ -579,7 +579,7 @@ function ensureRuleDefaults(r){
     renchanType:'tenpai_keishiki', shibariType:'none', shibariHan:2,
     fuCalculation:true, tsumoLoss:false, tsumoPinAri:true,
     kitaHandling:'nukidora',
-    specialTiles:[], groupIds:[], memo:''
+    specialTiles:[], memo:''
   };
   if(typeof r.akaDora==='number' && r.akaDoraMan===undefined){
     r.akaDoraMan = r.akaDora; r.akaDoraPin=0; r.akaDoraSou=0;
@@ -761,9 +761,7 @@ function renderHome(){
     </div>`;
   }
   const todaySessions = DB.history.filter(h=>h.date===todayStr() && h.ruleId===rule.id && !h.settlementId);
-  const visibleMembers = (rule.groupIds && rule.groupIds.length)
-    ? DB.members.filter(m=>m.groupIds && m.groupIds.some(gid=>rule.groupIds.includes(gid)))
-    : DB.members;
+  const visibleMembers = DB.members.filter(m => !m.ruleIds || m.ruleIds.length===0 || m.ruleIds.includes(rule.id));
   html += `<label class="field">メンバー選択（${rule.playerCount}人）</label><div class="row wrap">`;
   if(visibleMembers.length===0){
     html += `<span class="small-note">${DB.members.length===0?'メンバーが未登録です。':'このルールのグループに該当するメンバーがいません。'}<button class="link-btn" onclick="Router.go('settings')">設定で追加</button></span>`;
@@ -1055,6 +1053,13 @@ const InputForm = {
     if(UI._saving) return;
     const rule=getRule(UI.formRuleId);
     const entries=UI.formMemberIds.map(mid=>({memberId:mid, rawScore:numOrZero(UI.formEntries[mid])}));
+    const expectedTotal=rule.startPoints*UI.formMemberIds.length;
+    const currentTotal=entries.reduce((a,e)=>a+e.rawScore,0);
+    const diff=currentTotal-expectedTotal;
+    if(diff!==0){
+      renderInfoModal('⚠️ 点数がずれています！', `合計 ${currentTotal}点 が規定合計 ${expectedTotal}点 と一致していません（差分 ${sign(diff)}点）。持ち点の入力を確認してから保存してください。`);
+      return;
+    }
     UI._saving = true;
     const computed=computeSession(rule, entries, {tobashiTargetId: UI.formTobashiTarget});
     const players=computed.results.map(c=>({memberId:c.memberId, rawScore:c.rawScore, rank:c.rank, point:c.point}));
@@ -1082,7 +1087,7 @@ function updateScoreDiffDisplay(){
   const el=document.getElementById('scoreDiffHint');
   if(el){
     el.innerHTML = `合計: ${currentTotal} 点 / 規定合計: ${expectedTotal} 点
-      <span class="${diff===0?'diff-ok':'diff-bad'}"> (${diff===0?'一致':'差分 '+sign(diff)})</span>`;
+      <span class="${diff===0?'diff-ok':'diff-bad'}"> (${diff===0?'一致':'差分 '+sign(diff)})</span>${diff!==0?'<div class="diff-bad" style="margin-top:4px">⚠️ 一致するまで保存できません</div>':''}`;
   }
 }
 
@@ -1142,7 +1147,7 @@ function renderModal(scoreOnly){
       ${showTobashi?`<div class="hint" style="margin-bottom:10px">箱下の罰符（${rule.tobiPenalty}点）を受け取る人がいれば、その人の「飛ばし」を押してください。</div>`:''}
       ${rowsHtml}
       <div class="hint" id="scoreDiffHint">合計: ${currentTotal} 点 / 規定合計: ${expectedTotal} 点
-        <span class="${diff===0?'diff-ok':'diff-bad'}"> (${diff===0?'一致':'差分 '+sign(diff)})</span>
+        <span class="${diff===0?'diff-ok':'diff-bad'}"> (${diff===0?'一致':'差分 '+sign(diff)})</span>${diff!==0?'<div class="diff-bad" style="margin-top:4px">⚠️ 一致するまで保存できません</div>':''}
       </div>
       <button class="btn block" style="margin-top:16px" onclick="InputForm.save()">保存する</button>
     </div>
@@ -1264,19 +1269,27 @@ function settlementCardHtml(st){
     </tr>`;
   }).join('');
   const expanded = UI.expandedSettlementId===st.id;
+  const editingRate = UI.editingSettlementRateId===st.id;
   const sessions = DB.history.filter(h=>st.sessionIds.includes(h.id));
   return `<div class="session-card" style="border-left:4px solid var(--accent)">
     <div class="meta">
       <div class="d">${fmtDate(st.date)} ・ ${esc(rule?rule.name:'(ルール削除済)')} ・ ${memberList}</div>
     </div>
     <div class="row wrap" style="gap:10px;margin-bottom:8px;align-items:center">
-      ${rateEnabled?`<span class="small-note">レート: <input type="number" step="10" value="${rateUsed}" style="width:70px;display:inline-block" onchange="Settlement.updateRate('${st.id}', this.value)">円/1000点</span>`:''}
-      ${chipEnabled?`<span class="small-note">チップ: <input type="number" step="10" value="${chipValueUsed}" style="width:70px;display:inline-block" onchange="Settlement.updateChipValue('${st.id}', this.value)">円/枚</span>`:''}
+      ${editingRate ? `
+        ${rateEnabled?`<span class="small-note">レート: <input type="number" step="10" value="${rateUsed}" style="width:70px;display:inline-block" onchange="Settlement.updateRate('${st.id}', this.value)">円/1000点</span>`:''}
+        ${chipEnabled?`<span class="small-note">チップ: <input type="number" step="10" value="${chipValueUsed}" style="width:70px;display:inline-block" onchange="Settlement.updateChipValue('${st.id}', this.value)">円/枚</span>`:''}
+        <button class="link-btn" onclick="Settlement.toggleRateEdit(null)">完了</button>
+      ` : `
+        ${rateEnabled?`<span class="small-note">レート: ${rateUsed}円/1000点</span>`:''}
+        ${chipEnabled?`<span class="small-note">チップ: ${chipValueUsed}円/枚</span>`:''}
+        ${(rateEnabled||chipEnabled)?`<button class="link-btn" onclick="Settlement.toggleRateEdit('${st.id}')">編集</button>`:''}
+      `}
     </div>
     <table class="score-board"><thead><tr><th>名前</th><th>スコア</th><th>チップ</th><th>合計</th></tr></thead><tbody>${rows}</tbody></table>
     <div class="actions">
       <button class="btn sm secondary" onclick="Settlement.toggleExpand('${st.id}')">${expanded?'対局履歴を閉じる':'対局履歴を見る（'+sessions.length+'件）'}</button>
-      <button class="btn sm secondary" onclick="Settlement.unlock('${st.id}')">編集</button>
+      <button class="btn sm secondary" onclick="Settlement.unlock('${st.id}')">対局を編集</button>
       <button class="btn sm secondary" onclick="Settlement.share('${st.id}')">🔗 送る</button>
       <button class="btn sm danger" onclick="Settlement.remove('${st.id}')">削除</button>
     </div>
@@ -1335,6 +1348,10 @@ const Settlement = {
     persist('settlements');
     render();
   },
+  toggleRateEdit(id){
+    UI.editingSettlementRateId = id;
+    render();
+  },
   confirmToday(){
     const rule = getRule(UI.home.ruleId);
     if(!rule) return;
@@ -1358,6 +1375,15 @@ const Settlement = {
     });
     const babaSumForSettlement = sessions.reduce((a,s)=>a+(s.babaTotal||0),0);
     const scoreCheckTotal = Object.values(perMember).reduce((a,m)=>a+m.scorePoint,0) + babaSumForSettlement;
+    const chipCheckTotal = Object.values(perMember).reduce((a,m)=>a+(m.chipCount||0),0);
+    let moneyCheckTotal = 0;
+    if(rule.rateEnabled || rule.chipEnabled){
+      Object.values(perMember).forEach(m=>{
+        const scoreYen = rule.rateEnabled ? m.scorePoint*effRule.rate : 0;
+        const chipYen = rule.chipEnabled ? (m.chipCount||0)*effRule.chipValue : 0;
+        moneyCheckTotal += scoreYen + chipYen;
+      });
+    }
     const doConfirm = ()=>{
       const id = uid();
       const settlement = {
@@ -1378,8 +1404,12 @@ const Settlement = {
       render();
       renderInfoModal('精算を確定しました','履歴タブでいつでも確認・編集できます。ホーム画面はリセットされたので、続けて別のメンバーで新しく記録できます。');
     };
-    if(sessions.length>0 && Math.abs(scoreCheckTotal)>0.05){
-      showConfirmModal('⚠️ 数字がずれています！', `本来は合計が0になるはずですが、現在の差分は${sign(Math.round(scoreCheckTotal*10)/10)}点です。対局結果の入力に誤りがないかご確認ください。このまま確定することもできます。`, doConfirm, 'このまま確定する');
+    const mismatches = [];
+    if(sessions.length>0 && Math.abs(scoreCheckTotal)>0.05) mismatches.push(`スコアの差分：${sign(Math.round(scoreCheckTotal*10)/10)}点`);
+    if(rule.chipEnabled && Math.abs(chipCheckTotal)>0.01) mismatches.push(`チップ枚数の差分：${sign(chipCheckTotal)}枚`);
+    if((rule.rateEnabled||rule.chipEnabled) && Math.abs(moneyCheckTotal)>1) mismatches.push(`金額の差分：${sign(Math.round(moneyCheckTotal))}円`);
+    if(mismatches.length){
+      showConfirmModal('⚠️ ずれが発生しています！', `本来は合計が0になるはずですが、ズレがあります。\n${mismatches.join('\n')}\n対局結果やチップの入力に誤りがないかご確認ください。`, doConfirm, '気にせず確定する');
     } else {
       showConfirmModal('本日の精算を確定しますか？', 'このルール・メンバーの対局とチップを1つの精算表にまとめます。確定後は履歴タブでいつでも編集・削除できます。', doConfirm, '確定する');
     }
@@ -1467,7 +1497,7 @@ const Settlement = {
       (payload.memberNames||[]).forEach(name=>{
         let m = DB.members.find(mm=>mm.name===name);
         if(!m){
-          m = { id:uid(), name, color:PALETTE[DB.members.length % PALETTE.length], isSelf:false, groupIds:[] };
+          m = { id:uid(), name, color:PALETTE[DB.members.length % PALETTE.length], isSelf:false, ruleIds:[] };
           DB.members.push(m);
         }
         nameToId[name]=m.id;
@@ -1770,7 +1800,7 @@ function renderAnalysis(){
           <div class="stat-box"><div class="v ${s.totalPoint>0?'pos':s.totalPoint<0?'neg':''}">${sign(Math.round(s.totalPoint*10)/10)}</div><div class="l">通算スコア</div></div>
           <div class="stat-box"><div class="v">${sign(Math.round(s.avgPoint*100)/100)}</div><div class="l">平均ポイント</div></div>
           <div class="stat-box"><div class="v ${c.chipCount>0?'pos':c.chipCount<0?'neg':''}">${sign(c.chipCount)}</div><div class="l">通算チップ枚数</div></div>
-          <div class="stat-box"><div class="v ${c.moneyTotal>0?'pos':c.moneyTotal<0?'neg':''}">${sign(Math.round(c.moneyTotal))}円</div><div class="l">通算収支（精算より）</div></div>
+          <div class="stat-box" style="grid-column:span 2"><div class="v ${c.moneyTotal>0?'pos':c.moneyTotal<0?'neg':''}">${sign(Math.round(c.moneyTotal))}円</div><div class="l">通算収支（精算より）</div></div>
         </div>
         <div class="section-title">着順の割合</div>
         ${pieChartHtml(s.rankCount, s.n, s.maxRank)}
@@ -1848,21 +1878,10 @@ function renderSettings(){
     <button class="btn block" onclick="Settings.newRule()">＋ 新規ルールを追加</button>
     <button class="btn ghost block" style="margin-top:8px" onclick="Settings.openReceiveRuleModal()">🔗 コードでルールを受け取る</button>`;
   } else if(UI.settingsSub==='members'){
-    html+=`<div class="card"><h3>🏷 グループ管理</h3>
-      <div class="row wrap">
-        ${DB.groups.length===0?`<span class="small-note">グループはまだありません。</span>`:
-          DB.groups.map(g=>`<div class="chip selected" style="gap:8px">${esc(g.name)}<span style="cursor:pointer;font-weight:800" onclick="Settings.removeGroup('${g.id}')">✕</span></div>`).join('')}
-      </div>
-      <div class="row" style="margin-top:10px;gap:8px">
-        <input type="text" id="newGroupName" placeholder="新しいグループ名（例：会社の仲間）" style="flex:1">
-        <button class="btn sm secondary" onclick="Settings.addGroupFromInput()">追加</button>
-      </div>
-      <div class="hint" style="margin-top:8px">グループはメンバー・ルールの両方に設定できます。ルールにグループを設定すると、ホーム画面のメンバー選択がそのグループのメンバーだけに絞り込まれます。</div>
-    </div>
-    <div class="card"><h3>👤 登録済みメンバー</h3>`;
+    html+=`<div class="card"><h3>👤 登録済みメンバー</h3>`;
     if(DB.members.length===0){ html+=`<div class="small-note">未登録</div>`; }
     DB.members.forEach(m=>{
-      const groupNames = (m.groupIds||[]).map(gid=>{ const g=DB.groups.find(x=>x.id===gid); return g?g.name:null; }).filter(Boolean);
+      const ruleNames = (m.ruleIds||[]).map(rid=>{ const r=getRule(rid); return r?r.name:null; }).filter(Boolean);
       html+=`<div class="member-row" style="flex-direction:column;align-items:stretch">
         <div class="row" style="justify-content:space-between;align-items:center">
           <div class="nm">${avatarHtml(m.id,30)} ${esc(m.name)}${m.isSelf?' <span class="small-note">（自分）</span>':''}</div>
@@ -1871,7 +1890,7 @@ function renderSettings(){
             <button class="btn sm danger" onclick="Settings.removeMember('${m.id}')">削除</button>
           </div>
         </div>
-        ${groupNames.length?`<div class="small-note" style="margin:4px 0 0 38px">${groupNames.map(esc).join('・')}</div>`:''}
+        ${ruleNames.length?`<div class="small-note" style="margin:4px 0 0 38px">参加ルール：${ruleNames.map(esc).join('・')}</div>`:`<div class="small-note" style="margin:4px 0 0 38px">参加ルール：全ルール共通</div>`}
       </div>`;
     });
     html+=`</div><button class="btn block" onclick="Settings.newMember()">＋ メンバーを追加</button>`;
@@ -1890,7 +1909,6 @@ function renderSettings(){
         <button class="btn secondary block" onclick="Settings.forceSync()">今すぐクラウドに上書き保存</button>
         <div class="hint" style="margin-bottom:14px">電波のない場所で入力した内容を、後からまとめてクラウドに反映したい時に使ってください。</div>
         <button class="btn ghost block" style="margin-bottom:10px" onclick="Settlement.openReceiveSettlement()">🔗 コードで精算表を受け取る</button>
-        <button class="btn ghost block" style="margin-bottom:14px" onclick="ScoreShare.openReceiveModal()">🔗 コードでスコアを受け取る</button>
         <button class="btn danger block" onclick="doLogout()">ログアウト</button>`;
     } else {
       html+=`<div class="small-note" style="margin-bottom:14px">現在はこの端末のみにデータを保存しています。<br>ログインすると他の端末とスコアを同期できます。</div>
@@ -1906,33 +1924,15 @@ const Settings = {
 
   newMember(){
     UI.editingMemberId=null;
-    UI.memberDraft={ id:uid(), name:'', color:PALETTE[DB.members.length % PALETTE.length], isSelf:false, groupIds:[] };
+    UI.memberDraft={ id:uid(), name:'', color:PALETTE[DB.members.length % PALETTE.length], isSelf:false, ruleIds:[] };
     renderMemberModal();
   },
   toggleMemberDraft(key){ UI.memberDraft[key]=!UI.memberDraft[key]; renderMemberModal(); },
-  toggleMemberGroup(groupId){
-    UI.memberDraft.groupIds = UI.memberDraft.groupIds || [];
-    const idx = UI.memberDraft.groupIds.indexOf(groupId);
-    if(idx>=0) UI.memberDraft.groupIds.splice(idx,1); else UI.memberDraft.groupIds.push(groupId);
+  toggleMemberRule(ruleId){
+    UI.memberDraft.ruleIds = UI.memberDraft.ruleIds || [];
+    const idx = UI.memberDraft.ruleIds.indexOf(ruleId);
+    if(idx>=0) UI.memberDraft.ruleIds.splice(idx,1); else UI.memberDraft.ruleIds.push(ruleId);
     renderMemberModal();
-  },
-  addGroupFromInput(){
-    const el = document.getElementById('newGroupName');
-    if(!el) return;
-    const name = el.value.trim();
-    if(!name) return;
-    DB.groups.push({ id:uid(), name });
-    persist('groups');
-    render();
-  },
-  removeGroup(id){
-    showConfirmModal('グループを削除しますか？','このグループを削除すると、メンバー・ルールに設定されている割り当ても解除されます。', ()=>{
-      DB.groups = DB.groups.filter(g=>g.id!==id);
-      DB.members.forEach(m=>{ if(m.groupIds) m.groupIds = m.groupIds.filter(gid=>gid!==id); });
-      DB.rules.forEach(r=>{ if(r.groupIds) r.groupIds = r.groupIds.filter(gid=>gid!==id); });
-      persist('groups'); persist('members'); persist('rules');
-      render();
-    }, '削除する');
   },
   editMember(id){
     UI.editingMemberId=id;
@@ -1995,12 +1995,6 @@ const Settings = {
     rerenderRulePreserve();
   },
   applyUmaPreset(arr){ UI.ruleDraft.uma=[...arr]; rerenderRulePreserve(); },
-  toggleRuleGroup(groupId){
-    UI.ruleDraft.groupIds = UI.ruleDraft.groupIds || [];
-    const idx = UI.ruleDraft.groupIds.indexOf(groupId);
-    if(idx>=0) UI.ruleDraft.groupIds.splice(idx,1); else UI.ruleDraft.groupIds.push(groupId);
-    rerenderRulePreserve();
-  },
   updateDraft(key,val){ UI.ruleDraft[key]=val; },
   toggleDraft(key){ UI.ruleDraft[key]=!UI.ruleDraft[key]; rerenderRulePreserve(); },
   setShibariType(val){ UI.ruleDraft.shibariType=val; rerenderRulePreserve(); },
@@ -2157,11 +2151,12 @@ function renderMemberModal(){
         </div>
       </div>
       ${toggleRow('自分','自分自身のメンバーとしてマークする', d.isSelf, "Settings.toggleMemberDraft('isSelf')")}
-      <div class="field-wrap"><label class="field">グループ（複数選択可）</label>
+      <div class="field-wrap"><label class="field">参加するルール（複数選択可・未選択なら全ルールに表示）</label>
         <div class="row wrap">
-          ${DB.groups.length===0?`<span class="small-note">グループがまだありません。下の「グループ管理」から追加してください。</span>`:
-            DB.groups.map(g=>`<div class="chip ${(d.groupIds||[]).includes(g.id)?'selected':''}" onclick="Settings.toggleMemberGroup('${g.id}')">${esc(g.name)}</div>`).join('')}
+          ${DB.rules.length===0?`<span class="small-note">ルールがまだありません。先にルールを追加してください。</span>`:
+            DB.rules.map(r=>`<div class="chip ${(d.ruleIds||[]).includes(r.id)?'selected':''}" onclick="Settings.toggleMemberRule('${r.id}')">${esc(r.name)}</div>`).join('')}
         </div>
+        <div class="hint">ルールを選ぶと、そのルールをホーム画面で選んだ時だけこのメンバーが表示されるようになります。何も選ばなければ全てのルールで表示されます。</div>
       </div>
       <button class="btn block" style="margin-top:8px" onclick="Settings.saveMember()">保存する</button>
     </div>
@@ -2194,13 +2189,6 @@ function renderRuleModal(){
           <div class="chip ${d.playerCount===3?'selected':''}" onclick="Settings.setPlayerCount(3)">3人打ち</div>
         </div></div>
 
-      <div class="field-wrap"><label class="field">対象グループ（複数選択可）</label>
-        <div class="row wrap">
-          ${DB.groups.length===0?`<span class="small-note">グループがまだありません。設定→メンバー管理から追加できます。</span>`:
-            DB.groups.map(g=>`<div class="chip ${(d.groupIds||[]).includes(g.id)?'selected':''}" onclick="Settings.toggleRuleGroup('${g.id}')">${esc(g.name)}</div>`).join('')}
-        </div>
-        <div class="hint">選んだグループのメンバーだけが、ホーム画面のメンバー選択に表示されます。何も選ばない場合は全メンバーが表示されます。</div>
-      </div>
 
       ${toggleRow('レート換算','1000点あたりの円換算を表示', d.rateEnabled, "Settings.toggleDraft('rateEnabled')",
         `<div class="field-wrap">
@@ -2515,7 +2503,7 @@ function showConfirmModal(title, message, onConfirm, confirmLabel, onCancel){
     <div class="modal-overlay" onclick="if(event.target===this) cancelConfirmModal()">
       <div class="modal">
         <div class="modal-head"><h2>${esc(title)}</h2><button class="close-x" onclick="cancelConfirmModal()">✕</button></div>
-        <div class="small-note">${esc(message)}</div>
+        <div class="small-note" style="white-space:pre-line">${esc(message)}</div>
         <div class="row" style="margin-top:16px;gap:8px">
           <button class="btn secondary grow" onclick="cancelConfirmModal()">キャンセル</button>
           <button class="btn danger grow" onclick="runConfirmModal()">${esc(confirmLabel||'実行する')}</button>
@@ -2537,7 +2525,7 @@ function renderRuleDetailModal(){
   const extraYakumanLabel = {daisharin:'大車輪',daisharin_free:'大車輪（ピンズ以外も可）',surenko:'四連刻',manzu_routou:'萬子老頭',nagashi_tanyao:'流しタンヤオ',other:'その他'};
   const rows = [
     ['人数', r.playerCount+'人打ち'],
-    ['対象グループ', (r.groupIds&&r.groupIds.length) ? r.groupIds.map(gid=>{const g=DB.groups.find(x=>x.id===gid); return g?g.name:null;}).filter(Boolean).join('・') : '全メンバー'],
+    ['参加メンバー', (()=>{ const ms=DB.members.filter(m=>!m.ruleIds||m.ruleIds.length===0||m.ruleIds.includes(r.id)); return ms.length? ms.map(m=>esc(m.name)).join('・') : 'なし'; })()],
     ['レート', r.rateEnabled ? ('1000点＝'+r.rate+'円') : 'なし'],
     ['チップ', r.chipEnabled ? (r.chipValue+'円/枚・発動条件:'+({none:'なし',riichi:'リーチ祝儀',menzen:'面前祝儀',naki:'鳴き祝儀'}[r.chipCondition])) : 'なし'],
     ['役満祝儀', r.chipEnabled ? ('ツモ'+r.yakumanTsumoChip+'枚オール/ロン'+r.yakumanRonChip+'枚') : 'なし'],
