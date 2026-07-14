@@ -275,7 +275,6 @@ input:focus,select:focus,textarea:focus{outline:none;border-color:var(--accent);
   <div class="row" style="align-items:center;gap:10px">
     <span class="sync-dot" id="syncDot" title="同期状態"></span>
     <span id="accountName" style="color:rgba(255,255,255,.8);font-size:11.5px;font-weight:700"></span>
-    <button class="btn sm secondary" onclick="Router.go('settings')">⚙</button>
   </div>
 </div>
 
@@ -340,6 +339,33 @@ function updateAccountNameDisplay(){
   const el = document.getElementById('accountName');
   if(!el) return;
   el.textContent = (currentUser && currentUser.email) ? currentUser.email.split('@')[0] : '';
+}
+
+async function manualRefreshSync(){
+  if(!fbAuth || !currentUser){ renderInfoModal('ログインが必要です','クラウド同期にはログインが必要です。'); return; }
+  const btn = document.getElementById('refreshSyncBtn');
+  if(btn){ btn.disabled = true; btn.textContent = '更新中…'; }
+  try{
+    const doc = await userDocRef().get({source:'server'});
+    if(doc.exists){
+      const remote = JSON.parse(doc.data().payload || '{}');
+      DB.rules = remote.rules || DB.rules;
+      DB.members = remote.members || DB.members;
+      DB.history = remote.history || DB.history;
+      DB.chipTx = remote.chipTx || DB.chipTx || [];
+      DB.groups = remote.groups || DB.groups || [];
+      DB.rules.forEach(ensureRuleDefaults);
+      DB.members.forEach(ensureMemberDefaults);
+      localStorage.setItem(LS_KEY, JSON.stringify(DB));
+      render();
+      renderInfoModal('更新しました','最新のデータを取得しました。');
+    }
+  }catch(e){
+    console.error(e);
+    renderInfoModal('更新に失敗しました', firestoreErrorMessage(e, 'mahjong_setscore'));
+  }finally{
+    if(btn){ btn.disabled = false; btn.textContent = '⟳ 今すぐ更新する'; }
+  }
 }
 
 function handleAuthChange(user){
@@ -618,15 +644,18 @@ function computeSession(rule, entries){
     i=j;
   }
   const rank1Count = ranks.filter(r=>r===1).length;
-  const okaVal = rule.okaEnabled ? (rule.oka||0) : 0;
-  const okaEach = okaVal/(rank1Count||1);
+  // 返し点と開始点の差は、収支の合計が必ず0になるよう常に自動で1位に加算する（トップの取り分）
+  const autoGapTotal = (rule.returnPoints - rule.startPoints) * n / 1000;
+  // 「オカ」はこれとは別に、任意で追加できるボーナス点
+  const extraOka = rule.okaEnabled ? (rule.oka||0) : 0;
+  const rank1BonusEach = (autoGapTotal + extraOka) / (rank1Count||1);
   const tobiThreshold = rule.tobiRule==='minus100' ? -100 : 0;
   const babaFromRank = rule.babaFromRank || 2;
   const babaAmount = (rule.babaEnabled && rule.babaAmount) ? rule.babaAmount : 0;
   let babaTotal = 0;
   results.forEach(r=>{
     let pt = (r.rawScore - rule.returnPoints)/1000 + (r.umaApplied||0);
-    if(r.rank===1) pt += okaEach;
+    if(r.rank===1) pt += rank1BonusEach;
     if(rule.tobiAri && rule.tobiPenalty && r.rawScore<=tobiThreshold){
       pt -= rule.tobiPenalty;
     }
@@ -1259,6 +1288,14 @@ function renderSettings(){
     });
     html+=`</div><button class="btn block" onclick="Settings.newMember()">＋ メンバーを追加</button>`;
   } else {
+    if(currentUser){
+      html+=`<div class="card" style="text-align:center">
+        <div style="font-size:54px;line-height:1;margin-bottom:6px">🔄</div>
+        <h3 style="justify-content:center">最新のデータに更新</h3>
+        <div class="small-note" style="margin-bottom:14px">他の端末での変更をすぐに確認したい時は、ここを押してください。</div>
+        <button class="btn block" id="refreshSyncBtn" onclick="manualRefreshSync()" style="font-size:16px;padding:16px">⟳ 今すぐ更新する</button>
+      </div>`;
+    }
     html+=`<div class="card"><h3>🔐 アカウント</h3>`;
     if(currentUser){
       html+=`<div class="small-note" style="margin-bottom:14px">ログイン中: ${esc(currentUser.email)}<br>このアカウントで複数端末のデータが同期されています。</div>
@@ -1379,12 +1416,6 @@ const Settings = {
   toggleDraft(key){ UI.ruleDraft[key]=!UI.ruleDraft[key]; rerenderRulePreserve(); },
   setShibariType(val){ UI.ruleDraft.shibariType=val; rerenderRulePreserve(); },
   updateUma(idx,val){ UI.ruleDraft.uma[idx]=numOrZero(val); updateAxisDisplay(); },
-  autoOka(){
-    const d=UI.ruleDraft;
-    // uma/オカはウマと同じ「1000点単位」のスケールで扱うため、差分を1000で割る
-    d.oka = (d.returnPoints - d.startPoints) * d.playerCount / 1000;
-    rerenderRulePreserve();
-  },
   applyRatePreset(v){ UI.ruleDraft.rate=v; rerenderRulePreserve(); },
   applyChipPreset(v){ UI.ruleDraft.chipValue=v; rerenderRulePreserve(); },
   updateReturnPoints(val){
@@ -1680,11 +1711,11 @@ function renderRuleModal(){
       </div>
 
       <div class="section-title">オカ（基本オフでOK）</div>
-      ${toggleRow('オカを使う','1位に加算するボーナス点', d.okaEnabled, "Settings.toggleDraft('okaEnabled')",
-        `<div class="field-wrap"><div class="row">
+      <div class="hint" style="margin-bottom:8px">返し点と開始点の差は、収支の合計が必ず0になるよう自動的に1位の方に加算されます（この設定は不要です）。ここでの「オカ」は、それとは別に1位へさらに追加したいボーナス点がある場合だけ使ってください。</div>
+      ${toggleRow('オカを使う（追加ボーナス）','1位にさらに加算する追加ボーナス点', d.okaEnabled, "Settings.toggleDraft('okaEnabled')",
+        `<div class="field-wrap">
           <input type="number" step="1" value="${d.oka}" ${d.okaEnabled?'':'disabled'} oninput="Settings.updateDraft('oka', numOrZero(this.value))">
-          <button class="btn sm secondary" ${d.okaEnabled?'':'disabled'} onclick="Settings.autoOka()">自動計算</button>
-        </div><div class="hint">自動計算 = (返し点−開始点)×人数÷1000。同点1位の場合は自動で等分されます。</div></div>`)}
+        <div class="hint">同点1位の場合は自動で等分されます。</div></div>`)}
       ${toggleRow('場代','指定した着順以下の人から自動で場代を徴収する', d.babaEnabled, "Settings.toggleDraft('babaEnabled')",
         `<div class="field-wrap">
           <div class="row">
@@ -1927,7 +1958,7 @@ function renderRuleDetailModal(){
     ['連チャン方式', {tenpai_keishiki:'聴牌連（形式聴牌あり）',tenpai_yaku:'聴牌連（役あり聴牌のみ）',nagare:'流局連',none:'連荘なし'}[r.renchanType]],
     ['縛り', {none:'縛りなし',deai:'出上がり2飜（偶然2飜）',kanzen:'完全2飜（確定2飜）',other:'その他('+r.shibariHan+'飜)'}[r.shibariType]],
     ['ウマ', r.uma.join(' / ')],
-    ['オカ', r.okaEnabled ? r.oka : 'なし'],
+    ['オカ（追加ボーナス）', r.okaEnabled ? r.oka : 'なし'],
     ['場代', r.babaEnabled ? (r.babaFromRank+'着から1人'+r.babaAmount+'点') : 'なし'],
     ['符計算/ツモ損', YN(r.fuCalculation)+' / '+YN(r.tsumoLoss)],
     ['喰いタン/後付け/ツモピン', YN(r.kuitanAri)+' / '+YN(r.atozukeAri)+' / '+YN(r.tsumoPinAri)],
