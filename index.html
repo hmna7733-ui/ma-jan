@@ -1049,6 +1049,7 @@ const InputForm = {
   requestClose(){
     showConfirmModal('保存せずに閉じますか？','入力した内容は保存されません。閉じてもよいですか？', ()=>{ InputForm.close(); }, '閉じる', ()=>{ renderModal(); });
   },
+  dismissWarning(){ renderModal(); },
   save(){
     if(UI._saving) return;
     const rule=getRule(UI.formRuleId);
@@ -1057,7 +1058,13 @@ const InputForm = {
     const currentTotal=entries.reduce((a,e)=>a+e.rawScore,0);
     const diff=currentTotal-expectedTotal;
     if(diff!==0){
-      renderInfoModal('⚠️ 点数がずれています！', `合計 ${currentTotal}点 が規定合計 ${expectedTotal}点 と一致していません（差分 ${sign(diff)}点）。持ち点の入力を確認してから保存してください。`);
+      renderFormWarningModal('⚠️ 点数がずれています！', `合計 ${currentTotal}点 が規定合計 ${expectedTotal}点 と一致していません（差分 ${sign(diff)}点）。持ち点の入力を確認してから保存してください。`);
+      return;
+    }
+    const anyBusted = UI.formMemberIds.some(mid=>UI.formSign[mid]<0);
+    const needsTobashi = anyBusted && rule.tobiAri && rule.tobiPenalty>0;
+    if(needsTobashi && !UI.formTobashiTarget){
+      renderFormWarningModal('⚠️ 飛ばし先が未選択です！', `箱下の人がいます。トビ罰符（${rule.tobiPenalty}点）を受け取る人の「飛ばし」を選んでから保存してください。`);
       return;
     }
     UI._saving = true;
@@ -1409,7 +1416,7 @@ const Settlement = {
     if(rule.chipEnabled && Math.abs(chipCheckTotal)>0.01) mismatches.push(`チップ枚数の差分：${sign(chipCheckTotal)}枚`);
     if((rule.rateEnabled||rule.chipEnabled) && Math.abs(moneyCheckTotal)>1) mismatches.push(`金額の差分：${sign(Math.round(moneyCheckTotal))}円`);
     if(mismatches.length){
-      showConfirmModal('⚠️ ずれが発生しています！', `本来は合計が0になるはずですが、ズレがあります。\n${mismatches.join('\n')}\n対局結果やチップの入力に誤りがないかご確認ください。`, doConfirm, '気にせず確定する');
+      renderInfoModal('⚠️ ずれが発生しています！', `本来は合計が0になるはずですが、ズレがあります。\n${mismatches.join('\n')}\n対局結果やチップの入力に誤りがないかご確認のうえ、修正してからもう一度確定してください。`, '入力に戻る');
     } else {
       showConfirmModal('本日の精算を確定しますか？', 'このルール・メンバーの対局とチップを1つの精算表にまとめます。確定後は履歴タブでいつでも編集・削除できます。', doConfirm, '確定する');
     }
@@ -1770,21 +1777,36 @@ function renderAnalysis(){
   }
 
   if(UI.analysisMemberId==='ALL'){
-    html+=`<div class="card"><h3>メンバー別 通算成績</h3>
-    <table class="score-board"><thead><tr><th>名前</th><th>試合</th><th>平均順位</th><th>トップ率</th><th>ラス率</th><th>通算スコア</th><th>通算チップ</th><th>通算収支</th></tr></thead><tbody>`;
+    html+=`<div class="card"><h3>メンバー別 通算成績</h3></div>`;
     const rows=DB.members.map(m=>({m,s:computeStats(m.id,pcFilter),c:computeSettlementStats(m.id,pcFilter)})).filter(x=>x.s);
     rows.sort((a,b)=>b.s.totalPoint-a.s.totalPoint);
-    rows.forEach(({m,s,c})=>{
-      html+=`<tr style="cursor:pointer" onclick="Analysis.setMember('${m.id}')">
-        <td>${avatarHtml(m.id,22)} ${esc(m.name)}</td><td>${s.n}</td><td>${s.avgRank.toFixed(2)}</td>
-        <td>${s.topRate.toFixed(0)}%</td><td>${s.lastRate.toFixed(0)}%</td>
-        <td class="${s.totalPoint>0?'pos':s.totalPoint<0?'neg':''}">${sign(Math.round(s.totalPoint*10)/10)}</td>
-        <td class="${c.chipCount>0?'pos':c.chipCount<0?'neg':''}">${sign(c.chipCount)}枚</td>
-        <td class="${c.moneyTotal>0?'pos':c.moneyTotal<0?'neg':''}">${sign(Math.round(c.moneyTotal))}円</td>
-      </tr>`;
+    if(rows.length===0){
+      html+=`<div class="card"><div class="small-note">データがまだありません</div></div>`;
+    }
+    rows.forEach(({m,s,c},idx)=>{
+      html+=`<div class="card" style="cursor:pointer;padding:14px 16px" onclick="Analysis.setMember('${m.id}')">
+        <div class="row" style="justify-content:space-between;align-items:center">
+          <div class="nm" style="font-size:16px">${idx===0?'👑 ':''}${avatarHtml(m.id,28)} ${esc(m.name)}</div>
+          <div class="${s.totalPoint>0?'pos':s.totalPoint<0?'neg':''}" style="font-size:21px;font-weight:800">${sign(Math.round(s.totalPoint*10)/10)}</div>
+        </div>
+        <div class="row wrap" style="gap:8px;margin-top:10px">
+          <span class="chip" style="padding:5px 10px;font-size:11.5px;font-weight:600;background:var(--accent-light);cursor:default">試合 ${s.n}</span>
+          <span class="chip" style="padding:5px 10px;font-size:11.5px;font-weight:600;background:var(--accent-light);cursor:default">平均${s.avgRank.toFixed(2)}位</span>
+          <span class="chip" style="padding:5px 10px;font-size:11.5px;font-weight:600;background:var(--accent-light);cursor:default">トップ${s.topRate.toFixed(0)}%</span>
+          <span class="chip" style="padding:5px 10px;font-size:11.5px;font-weight:600;background:var(--accent-light);cursor:default">ラス${s.lastRate.toFixed(0)}%</span>
+        </div>
+        <div class="row" style="gap:16px;margin-top:10px;padding-top:10px;border-top:1px dashed var(--border)">
+          <div class="grow">
+            <div class="small-note" style="margin-bottom:2px">通算チップ</div>
+            <div class="${c.chipCount>0?'pos':c.chipCount<0?'neg':''}" style="font-weight:800;font-size:15px">${sign(c.chipCount)}枚</div>
+          </div>
+          <div class="grow">
+            <div class="small-note" style="margin-bottom:2px">通算収支</div>
+            <div class="${c.moneyTotal>0?'pos':c.moneyTotal<0?'neg':''}" style="font-weight:800;font-size:15px">${sign(Math.round(c.moneyTotal))}円</div>
+          </div>
+        </div>
+      </div>`;
     });
-    if(rows.length===0) html+=`<tr><td colspan="8" class="small-note">データがまだありません</td></tr>`;
-    html+=`</tbody></table></div>`;
   } else {
     const m=getMember(UI.analysisMemberId);
     const s=computeStats(UI.analysisMemberId,pcFilter);
@@ -2481,17 +2503,29 @@ function rerenderRulePreserve(){
 const YN = v => v ? '○' : '×';
 
 /* 汎用の簡易メッセージモーダル（alertがブロックされる環境でも確実に表示するため） */
-function renderInfoModal(title, message){
+function renderInfoModal(title, message, buttonLabel){
   document.getElementById('modalRoot').innerHTML = `
     <div class="modal-overlay" onclick="if(event.target===this) closeInfoModal()">
       <div class="modal">
         <div class="modal-head"><h2>${esc(title)}</h2><button class="close-x" onclick="closeInfoModal()">✕</button></div>
-        <div class="small-note">${esc(message)}</div>
-        <button class="btn block" style="margin-top:14px" onclick="closeInfoModal()">閉じる</button>
+        <div class="small-note" style="white-space:pre-line">${esc(message)}</div>
+        <button class="btn block" style="margin-top:14px" onclick="closeInfoModal()">${esc(buttonLabel||'閉じる')}</button>
       </div>
     </div>`;
 }
 function closeInfoModal(){ document.getElementById('modalRoot').innerHTML=''; }
+
+/* 対局入力フォーム専用の警告モーダル：閉じると入力していた内容のまま入力画面に戻る */
+function renderFormWarningModal(title, message){
+  document.getElementById('modalRoot').innerHTML = `
+    <div class="modal-overlay" onclick="if(event.target===this) InputForm.dismissWarning()">
+      <div class="modal">
+        <div class="modal-head"><h2>${esc(title)}</h2><button class="close-x" onclick="InputForm.dismissWarning()">✕</button></div>
+        <div class="small-note" style="white-space:pre-line">${esc(message)}</div>
+        <button class="btn block" style="margin-top:14px" onclick="InputForm.dismissWarning()">入力に戻る</button>
+      </div>
+    </div>`;
+}
 
 /* 汎用の確認モーダル（削除・ログアウトなど破壊的操作の確認用。confirm()の代わりに使用） */
 let _confirmModalCallback = null;
