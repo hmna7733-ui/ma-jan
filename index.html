@@ -528,6 +528,7 @@ function firestoreErrorMessage(e, collectionName){
 function ensureMemberDefaults(m){
   if(m.isSelf===undefined) m.isSelf=false;
   if(!m.ruleIds) m.ruleIds=[];
+  if(!m.aliases) m.aliases=[];
   return m;
 }
 
@@ -565,6 +566,7 @@ function ensureRuleDefaults(r){
     ippatsuAri:true, uradoraAri:true, kanUradoraAri:true,
     notenPenaltyEnabled:true,
     furitenAri:false, furitenOpenRequired:'not_required',
+    doubleRonAri:true, tripleRonAri:true, tiebreakRule:'split',
     nagashiEnabled:false, nagashiTier:'mangan', nagashiChipEnabled:false,
     sanpuuAri:false, sanrenkouAri:false, otherYakuEnabled:false, otherYakuText:'',
     kazoeYakumanEnabled:true, kazoeYakumanHan:13, kazoeYakumanChipAri:true,
@@ -634,10 +636,32 @@ let UI = {
 function computeSession(rule, entries, options){
   options = options || {};
   const tobashiTargetId = options.tobashiTargetId || null;
-  const sorted = [...entries].sort((a,b)=>b.rawScore-a.rawScore);
+  const tiebreakOrders = options.tiebreakOrders || {};
+  const useAtamahane = rule.tiebreakRule==='atamahane';
+  // まずスコア降順に並べつつ、同点グループ内は頭ハネの指定順があればその順で並べ替える
+  let sorted = [...entries].sort((a,b)=>b.rawScore-a.rawScore);
+  if(useAtamahane){
+    let idx=0;
+    while(idx<sorted.length){
+      let j=idx; while(j<sorted.length && sorted[j].rawScore===sorted[idx].rawScore) j++;
+      if(j-idx>1){
+        const group = sorted.slice(idx,j);
+        const key = group.map(e=>e.memberId).slice().sort().join('_');
+        const order = tiebreakOrders[key];
+        if(order && order.length===group.length){
+          group.sort((a,b)=>order.indexOf(a.memberId)-order.indexOf(b.memberId));
+          for(let k=idx;k<j;k++) sorted[k]=group[k-idx];
+        }
+      }
+      idx=j;
+    }
+  }
   const n = sorted.length;
   let ranks=[];
-  for(let i=0;i<n;i++){ ranks.push(i>0 && sorted[i].rawScore===sorted[i-1].rawScore ? ranks[i-1] : i+1); }
+  for(let i=0;i<n;i++){
+    if(useAtamahane){ ranks.push(i+1); }
+    else{ ranks.push(i>0 && sorted[i].rawScore===sorted[i-1].rawScore ? ranks[i-1] : i+1); }
+  }
   const results = sorted.map((e,i)=>({...e, rank:ranks[i]}));
   let i=0;
   while(i<n){
@@ -666,7 +690,7 @@ function computeSession(rule, entries, options){
       pt -= rule.tobiPenalty;
       tobiPenaltyCollected += rule.tobiPenalty;
     }
-    if(babaAmount && r.rank>=babaFromRank){
+    if(babaAmount && r.rank===babaFromRank){
       pt -= babaAmount;
       babaTotal += babaAmount;
     }
@@ -942,7 +966,7 @@ const InputForm = {
   open(){
     UI.editingHistoryId=null;
     const rule=getRule(UI.home.ruleId);
-    UI.formSign={}; UI.formLeading={}; UI.formEntries={}; UI.formTobashiTarget=null;
+    UI.formSign={}; UI.formLeading={}; UI.formEntries={}; UI.formTobashiTarget=null; UI.formTiebreakOrder={};
     UI.home.memberIds.forEach(id=>{
       UI.formSign[id]=1;
       UI.formLeading[id]='';
@@ -961,7 +985,7 @@ const InputForm = {
     UI.formRuleId=s.ruleId;
     UI.formMemberIds=s.players.map(p=>p.memberId);
     const suffixLen = InputForm.currentSuffixLen();
-    UI.formSign={}; UI.formLeading={}; UI.formEntries={}; UI.formTobashiTarget=null;
+    UI.formSign={}; UI.formLeading={}; UI.formEntries={}; UI.formTobashiTarget=null; UI.formTiebreakOrder={};
     s.players.forEach(p=>{
       const neg = p.rawScore<0;
       const abs = Math.abs(p.rawScore);
@@ -1002,6 +1026,7 @@ const InputForm = {
     InputForm.composeEntry(mid);
     InputForm.updatePreview(mid);
     updateScoreDiffDisplay();
+    updateTiebreakSection();
   },
   toggleSign(mid){
     UI.formSign[mid] = (UI.formSign[mid]||1) * -1;
@@ -1014,6 +1039,17 @@ const InputForm = {
   setTobashiTarget(mid){
     UI.formTobashiTarget = (UI.formTobashiTarget===mid) ? null : mid;
     renderModal();
+  },
+  tapTiebreak(key, mid){
+    UI.formTiebreakOrder[key] = UI.formTiebreakOrder[key] || [];
+    if(!UI.formTiebreakOrder[key].includes(mid)){
+      UI.formTiebreakOrder[key].push(mid);
+    }
+    updateTiebreakSection();
+  },
+  resetTiebreak(key){
+    UI.formTiebreakOrder[key] = [];
+    updateTiebreakSection();
   },
   updatePreview(mid){
     const el = document.getElementById('score-preview-'+mid);
@@ -1034,6 +1070,7 @@ const InputForm = {
       InputForm.composeEntry(mid);
       InputForm.updatePreview(mid);
       updateScoreDiffDisplay();
+      updateTiebreakSection();
     }, 130);
   },
   initDrumScrollPositions(){
@@ -1067,8 +1104,21 @@ const InputForm = {
       renderFormWarningModal('⚠️ 飛ばし先が未選択です！', `箱下の人がいます。トビ罰符（${rule.tobiPenalty}点）を受け取る人の「飛ばし」を選んでから保存してください。`);
       return;
     }
+    if(rule.tiebreakRule==='atamahane'){
+      const groups = {};
+      entries.forEach(e=>{ (groups[String(e.rawScore)]=groups[String(e.rawScore)]||[]).push(e.memberId); });
+      const unresolved = Object.values(groups).filter(g=>g.length>1).some(g=>{
+        const key=g.slice().sort().join('_');
+        const order=UI.formTiebreakOrder[key];
+        return !(order && order.length===g.length);
+      });
+      if(unresolved){
+        renderFormWarningModal('⚠️ 同点の着順が未選択です！', '同点の方がいます。「頭ハネ」ルールのため、着順が上の順にタップして選んでから保存してください。');
+        return;
+      }
+    }
     UI._saving = true;
-    const computed=computeSession(rule, entries, {tobashiTargetId: UI.formTobashiTarget});
+    const computed=computeSession(rule, entries, {tobashiTargetId: UI.formTobashiTarget, tiebreakOrders: UI.formTiebreakOrder});
     const players=computed.results.map(c=>({memberId:c.memberId, rawScore:c.rawScore, rank:c.rank, point:c.point}));
     if(UI.editingHistoryId){
       const s=DB.history.find(x=>x.id===UI.editingHistoryId);
@@ -1096,6 +1146,36 @@ function updateScoreDiffDisplay(){
     el.innerHTML = `合計: ${currentTotal} 点 / 規定合計: ${expectedTotal} 点
       <span class="${diff===0?'diff-ok':'diff-bad'}"> (${diff===0?'一致':'差分 '+sign(diff)})</span>${diff!==0?'<div class="diff-bad" style="margin-top:4px">⚠️ 一致するまで保存できません</div>':''}`;
   }
+}
+
+/* 頭ハネ設定時：同点者の着順を選ばせるUIをその場で更新（フォーム全体は再描画しない） */
+function tiebreakSectionHtml(){
+  const rule=getRule(UI.formRuleId);
+  if(!rule || rule.tiebreakRule!=='atamahane') return '';
+  const scores={};
+  UI.formMemberIds.forEach(mid=>{ scores[mid]=numOrZero(UI.formEntries[mid]); });
+  const groups={};
+  UI.formMemberIds.forEach(mid=>{ const key=String(scores[mid]); (groups[key]=groups[key]||[]).push(mid); });
+  const tieGroups = Object.values(groups).filter(g=>g.length>1);
+  if(tieGroups.length===0) return '';
+  return tieGroups.map(g=>{
+    const key = g.slice().sort().join('_');
+    const order = UI.formTiebreakOrder[key] || [];
+    return `<div class="card" style="background:#fff8e1;border:1.5px solid #f0c96b;margin-bottom:10px">
+      <div style="font-weight:700;font-size:13px;margin-bottom:8px">⚠️ 同点：${g.map(mid=>esc(memberName(mid))).join('・')} → 着順が上の順にタップしてください</div>
+      <div class="row wrap" style="gap:8px">
+        ${g.map(mid=>{
+          const pos = order.indexOf(mid);
+          return `<button class="chip ${pos>=0?'selected':''}" onclick="InputForm.tapTiebreak('${key}','${mid}')">${pos>=0?(pos+1)+'. ':''}${esc(memberName(mid))}</button>`;
+        }).join('')}
+        ${order.length?`<button class="link-btn" onclick="InputForm.resetTiebreak('${key}')">やり直す</button>`:''}
+      </div>
+    </div>`;
+  }).join('');
+}
+function updateTiebreakSection(){
+  const el = document.getElementById('tiebreakSection');
+  if(el) el.innerHTML = tiebreakSectionHtml();
 }
 
 function renderModal(scoreOnly){
@@ -1153,6 +1233,7 @@ function renderModal(scoreOnly){
       </div>
       ${showTobashi?`<div class="hint" style="margin-bottom:10px">箱下の罰符（${rule.tobiPenalty}点）を受け取る人がいれば、その人の「飛ばし」を押してください。</div>`:''}
       ${rowsHtml}
+      <div id="tiebreakSection">${tiebreakSectionHtml()}</div>
       <div class="hint" id="scoreDiffHint">合計: ${currentTotal} 点 / 規定合計: ${expectedTotal} 点
         <span class="${diff===0?'diff-ok':'diff-bad'}"> (${diff===0?'一致':'差分 '+sign(diff)})</span>${diff!==0?'<div class="diff-bad" style="margin-top:4px">⚠️ 一致するまで保存できません</div>':''}
       </div>
@@ -1500,42 +1581,35 @@ const Settlement = {
         DB.rules.push(rule);
       }
       if(!rule){ renderInfoModal('受け取りに失敗しました','ルール情報が見つかりませんでした。'); return; }
-      const nameToId = {};
-      (payload.memberNames||[]).forEach(name=>{
-        let m = DB.members.find(mm=>mm.name===name);
-        if(!m){
-          m = { id:uid(), name, color:PALETTE[DB.members.length % PALETTE.length], isSelf:false, ruleIds:[] };
-          DB.members.push(m);
-        }
-        nameToId[name]=m.id;
+      resolveMemberNames(payload.memberNames||[], (nameToId)=>{
+        const settlementId = uid();
+        const newSessionIds = [];
+        (payload.sessions||[]).forEach(s=>{
+          const players = s.players.map(p=>({ memberId: nameToId[p.name], rawScore:p.rawScore, rank:p.rank, point:p.point }));
+          const newId = uid();
+          DB.history.push({ id:newId, date:s.date, ruleId:rule.id, players, babaTotal:s.babaTotal||0, settlementId });
+          newSessionIds.push(newId);
+        });
+        const perMember = {};
+        Object.entries(payload.perMemberByName||{}).forEach(([name,v])=>{
+          const mid = nameToId[name];
+          if(mid) perMember[mid] = { scorePoint: v.scorePoint||0, chipCount: v.chipCount||0 };
+        });
+        DB.settlements.push({
+          id: settlementId, date: payload.date, ruleId: rule.id,
+          memberIds: (payload.memberNames||[]).map(n=>nameToId[n]),
+          sessionIds: newSessionIds, chipTxIds: [],
+          perMember,
+          rateEnabledUsed: payload.rateEnabledUsed, rateUsed: payload.rateUsed,
+          chipEnabledUsed: payload.chipEnabledUsed, chipValueUsed: payload.chipValueUsed,
+          confirmedAt: Date.now()
+        });
+        persist('members'); persist('rules'); persist('history'); persist('settlements');
+        UI.receiveSettlementCode=null;
+        document.getElementById('modalRoot').innerHTML='';
+        render();
+        renderInfoModal('受け取りました','精算表と対局履歴を受け取りました。データタブの成績にも反映されます。');
       });
-      const settlementId = uid();
-      const newSessionIds = [];
-      (payload.sessions||[]).forEach(s=>{
-        const players = s.players.map(p=>({ memberId: nameToId[p.name], rawScore:p.rawScore, rank:p.rank, point:p.point }));
-        const newId = uid();
-        DB.history.push({ id:newId, date:s.date, ruleId:rule.id, players, babaTotal:s.babaTotal||0, settlementId });
-        newSessionIds.push(newId);
-      });
-      const perMember = {};
-      Object.entries(payload.perMemberByName||{}).forEach(([name,v])=>{
-        const mid = nameToId[name];
-        if(mid) perMember[mid] = { scorePoint: v.scorePoint||0, chipCount: v.chipCount||0 };
-      });
-      DB.settlements.push({
-        id: settlementId, date: payload.date, ruleId: rule.id,
-        memberIds: (payload.memberNames||[]).map(n=>nameToId[n]),
-        sessionIds: newSessionIds, chipTxIds: [],
-        perMember,
-        rateEnabledUsed: payload.rateEnabledUsed, rateUsed: payload.rateUsed,
-        chipEnabledUsed: payload.chipEnabledUsed, chipValueUsed: payload.chipValueUsed,
-        confirmedAt: Date.now()
-      });
-      persist('members'); persist('rules'); persist('history'); persist('settlements');
-      UI.receiveSettlementCode=null;
-      document.getElementById('modalRoot').innerHTML='';
-      render();
-      renderInfoModal('受け取りました','精算表と対局履歴を受け取りました。データタブの成績にも反映されます。');
     }catch(e){ console.error(e); renderInfoModal('受け取りに失敗しました', firestoreErrorMessage(e, 'mahjong_shared_settlements')); }
   }
 };
@@ -1632,7 +1706,7 @@ function computeSettlementStats(memberId, pcFilter){
 function computeHeadToHead(memberId, pcFilter){
   pcFilter = pcFilter || 'all';
   const opp={};
-  const ensure=(oid)=>{ if(!opp[oid]) opp[oid]={games:0,win:0,lose:0,draw:0,scoreDiff:0,chipDiff:0,moneyDiff:0}; return opp[oid]; };
+  const ensure=(oid)=>{ if(!opp[oid]) opp[oid]={games:0,win:0,lose:0,draw:0,scoreDiff:0,chipDiff:0,moneyDiff:0,rankCounts:[0,0,0,0],maxRank:0}; return opp[oid]; };
 
   /* スコア差：各対局ごとに「勝ち組の取り分は負け組の損失から比例配分される」と考え、
      同じ側（勝ち同士・負け同士）の差分は0、勝ち-負けの間だけ差分が生まれるようにする */
@@ -1646,6 +1720,8 @@ function computeHeadToHead(memberId, pcFilter){
       const o=ensure(p.memberId);
       o.games++;
       if(me.rank<p.rank) o.win++; else if(me.rank>p.rank) o.lose++; else o.draw++;
+      o.rankCounts[me.rank-1] = (o.rankCounts[me.rank-1]||0)+1;
+      o.maxRank = Math.max(o.maxRank, s.players.length);
     });
     const winners = s.players.filter(p=>p.point>0);
     const losers = s.players.filter(p=>p.point<0);
@@ -1722,7 +1798,8 @@ function computeRuleBreakdown(memberId, pcFilter){
 }
 
 /* 円グラフ（着順分布）をCSSのconic-gradientで描画 */
-function pieChartHtml(rankCount, n, maxRank){
+function pieChartHtml(rankCount, n, maxRank, size){
+  size = size || 110;
   const colors = ['#c8912a','#3d8bd4','#6a994e','#9d4edd'];
   let acc = 0;
   const stops = [];
@@ -1737,14 +1814,14 @@ function pieChartHtml(rankCount, n, maxRank){
   const legend = Array.from({length:maxRank},(_,i)=>{
     const cnt = rankCount[i]||0;
     const pct = n ? Math.round(cnt/n*1000)/10 : 0;
-    return `<div class="row" style="align-items:center;gap:6px;font-size:12.5px">
-      <span style="width:10px;height:10px;border-radius:50%;background:${colors[i%colors.length]};display:inline-block"></span>
+    return `<div class="row" style="align-items:center;gap:6px;font-size:${size<80?11:12.5}px">
+      <span style="width:9px;height:9px;border-radius:50%;background:${colors[i%colors.length]};display:inline-block"></span>
       ${i+1}位 ${pct}%（${cnt}回）
     </div>`;
   }).join('');
-  return `<div class="row" style="align-items:center;gap:18px;margin-top:10px">
-    <div style="width:110px;height:110px;border-radius:50%;background:${gradient};flex-shrink:0"></div>
-    <div style="display:flex;flex-direction:column;gap:4px">${legend}</div>
+  return `<div class="row" style="align-items:center;gap:14px;margin-top:8px">
+    <div style="width:${size}px;height:${size}px;border-radius:50%;background:${gradient};flex-shrink:0"></div>
+    <div style="display:flex;flex-direction:column;gap:3px">${legend}</div>
   </div>`;
 }
 
@@ -1878,19 +1955,23 @@ function renderAnalysis(){
       const opp=computeHeadToHead(UI.analysisMemberId,pcFilter);
       const oppEntries=Object.entries(opp);
       if(oppEntries.length){
-        html+=`<div class="card"><h3>対戦相手別 成績</h3>
-        <table class="score-board opp-table"><thead><tr><th>相手</th><th>対局</th><th>勝</th><th>負</th><th>分</th><th>スコア差</th><th>チップ差</th><th>金額差</th></tr></thead><tbody>`;
+        html+=`<div class="card"><h3>対戦相手別 成績</h3></div>`;
         oppEntries.sort((a,b)=>b[1].scoreDiff-a[1].scoreDiff).forEach(([oid,o])=>{
-          html+=`<tr style="cursor:pointer" onclick="Analysis.setOpponent('${oid}')">
-            <td>${avatarHtml(oid,20)} ${esc(memberName(oid))}</td><td>${o.games}</td><td>${o.win}</td><td>${o.lose}</td><td>${o.draw}</td>
-            <td class="${o.scoreDiff>0?'pos':o.scoreDiff<0?'neg':''}">${sign(Math.round(o.scoreDiff*10)/10)}</td>
-            <td class="${o.chipDiff>0?'pos':o.chipDiff<0?'neg':''}">${sign(o.chipDiff)}枚</td>
-            <td class="${o.moneyDiff>0?'pos':o.moneyDiff<0?'neg':''}">${sign(Math.round(o.moneyDiff))}P</td>
-          </tr>`;
+          html+=`<div class="card" style="cursor:pointer;padding:14px 16px" onclick="Analysis.setOpponent('${oid}')">
+            <div class="row" style="justify-content:space-between;align-items:center">
+              <div class="nm">${avatarHtml(oid,26)} ${esc(memberName(oid))}</div>
+              <div class="${o.scoreDiff>0?'pos':o.scoreDiff<0?'neg':''}" style="font-size:19px;font-weight:800">${sign(Math.round(o.scoreDiff*10)/10)}</div>
+            </div>
+            <div class="row wrap" style="gap:8px;margin-top:8px">
+              <span class="chip" style="padding:5px 10px;font-size:11.5px;font-weight:600;background:var(--accent-light);cursor:default">対局${o.games}</span>
+              <span class="chip" style="padding:5px 10px;font-size:11.5px;font-weight:600;background:var(--accent-light);cursor:default">${o.win}勝${o.lose}敗${o.draw}分</span>
+              <span class="chip" style="padding:5px 10px;font-size:11.5px;font-weight:600;background:var(--accent-light);cursor:default">チップ差${sign(o.chipDiff)}枚</span>
+              <span class="chip" style="padding:5px 10px;font-size:11.5px;font-weight:600;background:var(--accent-light);cursor:default">金額差${sign(Math.round(o.moneyDiff))}P</span>
+            </div>
+            ${o.maxRank?pieChartHtml(o.rankCounts, o.games, o.maxRank, 76):''}
+          </div>`;
         });
-        html+=`</tbody></table>
-        <div class="hint" style="margin-top:8px">差分は「相手の合計値の符号を反転したもの」として計算しています（多人数対局のため厳密な1対1のやり取りではなく、目安の数値です）。</div>
-        </div>`;
+        html+=`<div class="card"><div class="hint">差分は「相手の合計値の符号を反転したもの」として計算しています（多人数対局のため厳密な1対1のやり取りではなく、目安の数値です）。円グラフはこの相手との対局における自分の着順分布です。</div></div>`;
       }
       let games=s.games;
       let filterNote='';
@@ -1949,6 +2030,7 @@ function renderSettings(){
           </div>
         </div>
         ${ruleNames.length?`<div class="small-note" style="margin:4px 0 0 38px">参加ルール：${ruleNames.map(esc).join('・')}</div>`:`<div class="small-note" style="margin:4px 0 0 38px">参加ルール：全ルール共通</div>`}
+        ${(m.aliases||[]).length?`<div class="small-note" style="margin:2px 0 0 38px">別名：${(m.aliases||[]).map(esc).join('・')}</div>`:''}
       </div>`;
     });
     html+=`</div><button class="btn block" onclick="Settings.newMember()">＋ メンバーを追加</button>
@@ -1983,7 +2065,7 @@ const Settings = {
 
   newMember(){
     UI.editingMemberId=null;
-    UI.memberDraft={ id:uid(), name:'', color:PALETTE[DB.members.length % PALETTE.length], isSelf:false, ruleIds:[] };
+    UI.memberDraft={ id:uid(), name:'', color:PALETTE[DB.members.length % PALETTE.length], isSelf:false, ruleIds:[], aliases:[] };
     renderMemberModal();
   },
   toggleMemberDraft(key){ UI.memberDraft[key]=!UI.memberDraft[key]; renderMemberModal(); },
@@ -1991,6 +2073,22 @@ const Settings = {
     UI.memberDraft.ruleIds = UI.memberDraft.ruleIds || [];
     const idx = UI.memberDraft.ruleIds.indexOf(ruleId);
     if(idx>=0) UI.memberDraft.ruleIds.splice(idx,1); else UI.memberDraft.ruleIds.push(ruleId);
+    renderMemberModal();
+  },
+  addMemberAlias(){
+    const el = document.getElementById('newAliasName');
+    if(!el) return;
+    const name = el.value.trim();
+    if(!name) return;
+    UI.memberDraft.aliases = UI.memberDraft.aliases || [];
+    if(!UI.memberDraft.aliases.includes(name) && name!==UI.memberDraft.name){
+      UI.memberDraft.aliases.push(name);
+    }
+    el.value='';
+    renderMemberModal();
+  },
+  removeMemberAlias(name){
+    UI.memberDraft.aliases = (UI.memberDraft.aliases||[]).filter(a=>a!==name);
     renderMemberModal();
   },
   editMember(id){
@@ -2057,6 +2155,11 @@ const Settings = {
       const m = DB.members.find(x=>x.id===mid);
       if(m && m.ruleIds && m.ruleIds.length && primary){
         primary.ruleIds = Array.from(new Set([...(primary.ruleIds||[]), ...m.ruleIds]));
+      }
+      if(m && primary){
+        primary.aliases = primary.aliases || [];
+        const namesToAdd = [m.name, ...(m.aliases||[])].filter(n=>n && n!==primary.name && !primary.aliases.includes(n));
+        primary.aliases = Array.from(new Set([...primary.aliases, ...namesToAdd]));
       }
     });
     DB.members = DB.members.filter(m=>!mergeSet.has(m.id));
@@ -2257,6 +2360,73 @@ function updateAxisDisplay(){
   });
 }
 
+/* 受信データの名前解決：正式名/別名と一致するメンバーを探し、複数候補があれば確認モーダルで選ばせる */
+function resolveMemberNames(names, onResolved){
+  const uniqueNames = Array.from(new Set(names));
+  const nameToId = {};
+  const ambiguous = [];
+  uniqueNames.forEach(name=>{
+    const matches = DB.members.filter(m => m.name===name || (m.aliases||[]).includes(name));
+    if(matches.length===1){
+      nameToId[name] = matches[0].id;
+    } else if(matches.length===0){
+      const m = { id:uid(), name, color:PALETTE[DB.members.length % PALETTE.length], isSelf:false, ruleIds:[], aliases:[] };
+      DB.members.push(m);
+      nameToId[name] = m.id;
+    } else {
+      ambiguous.push({ name, matches });
+    }
+  });
+  if(ambiguous.length===0){
+    onResolved(nameToId);
+  } else {
+    UI.pendingNameResolution = { ambiguous, nameToId, onResolved, choices:{} };
+    renderNameResolutionModal();
+  }
+}
+function resolveNameChoice(idx, val){
+  UI.pendingNameResolution.choices[idx] = val;
+}
+function finalizeNameResolution(){
+  const p = UI.pendingNameResolution;
+  if(!p) return;
+  p.ambiguous.forEach((a,i)=>{
+    const choice = p.choices[i] || a.matches[0].id;
+    if(choice==='__new__'){
+      const m = { id:uid(), name:a.name, color:PALETTE[DB.members.length % PALETTE.length], isSelf:false, ruleIds:[], aliases:[] };
+      DB.members.push(m);
+      p.nameToId[a.name] = m.id;
+    } else {
+      p.nameToId[a.name] = choice;
+    }
+  });
+  document.getElementById('modalRoot').innerHTML='';
+  const onResolved = p.onResolved;
+  const nameToId = p.nameToId;
+  UI.pendingNameResolution = null;
+  onResolved(nameToId);
+}
+function renderNameResolutionModal(){
+  const p = UI.pendingNameResolution;
+  if(!p){ return; }
+  const html = `
+  <div class="modal-overlay">
+    <div class="modal">
+      <div class="modal-head"><h2>メンバーの確認</h2></div>
+      <div class="small-note" style="margin-bottom:14px">同じ名前が複数のメンバーの別名として登録されています。どちらのデータとして統合するか選んでください。</div>
+      ${p.ambiguous.map((a,i)=>`
+        <div class="field-wrap"><label class="field">受信した名前：「${esc(a.name)}」</label>
+          <select onchange="resolveNameChoice(${i}, this.value)">
+            ${a.matches.map(m=>`<option value="${m.id}">${esc(m.name)} として統合</option>`).join('')}
+            <option value="__new__">別の新しいメンバーとして追加</option>
+          </select>
+        </div>`).join('')}
+      <button class="btn block" style="margin-top:8px" onclick="finalizeNameResolution()">決定</button>
+    </div>
+  </div>`;
+  document.getElementById('modalRoot').innerHTML = html;
+}
+
 function renderMergeMembersModal(){
   if(!UI.mergeForm){ document.getElementById('modalRoot').innerHTML=''; return; }
   const f = UI.mergeForm;
@@ -2291,6 +2461,17 @@ function renderMemberModal(){
       <div class="modal-head"><h2>${UI.editingMemberId?'メンバーを編集':'メンバーを追加'}</h2><button class="close-x" onclick="Settings.requestCloseMemberModal()">✕</button></div>
       <div class="field-wrap"><label class="field">名前</label>
         <input type="text" value="${esc(d.name)}" oninput="Settings.updateMemberDraft('name', this.value)" placeholder="例：アカギ"></div>
+      <div class="field-wrap"><label class="field">別名（表記ゆれ・統合した名前）</label>
+        <div class="row wrap">
+          ${(d.aliases||[]).length===0?`<span class="small-note">まだ登録されていません。</span>`:
+            (d.aliases||[]).map(a=>`<div class="chip selected" style="gap:8px">${esc(a)}<span style="cursor:pointer;font-weight:800" onclick="Settings.removeMemberAlias('${esc(a).replace(/'/g,"&#39;")}')">✕</span></div>`).join('')}
+        </div>
+        <div class="row" style="margin-top:8px;gap:8px">
+          <input type="text" id="newAliasName" placeholder="例：隼人、はやさん" style="flex:1">
+          <button class="btn sm secondary" onclick="Settings.addMemberAlias()">追加</button>
+        </div>
+        <div class="hint">ここに登録した名前と一致するデータを他の人から受け取った場合、自動でこのメンバーに統合されます。</div>
+      </div>
       <div class="field-wrap"><label class="field">カラー</label>
         <div class="color-swatches">
           ${PALETTE.map(c=>`<div class="swatch ${d.color===c?'selected':''}" style="background:${c}" onclick="Settings.updateMemberDraft('color','${c}'); renderMemberModal()"></div>`).join('')}
@@ -2439,24 +2620,31 @@ function renderRuleModal(){
         `<div class="field-wrap">
           <input type="number" step="1" value="${d.oka}" ${d.okaEnabled?'':'disabled'} oninput="Settings.updateDraft('oka', numOrZero(this.value))">
         <div class="hint">同点1位の場合は自動で等分されます。</div></div>`)}
-      ${toggleRow('場代','指定した着順以下の人から自動で場代を徴収する', d.babaEnabled, "Settings.toggleDraft('babaEnabled')",
+      ${toggleRow('場代','指定した着順の人からだけ自動で場代を徴収する', d.babaEnabled, "Settings.toggleDraft('babaEnabled')",
         `<div class="field-wrap">
           <div class="row">
-            <div class="grow"><label class="field">この着順以下から徴収</label>
+            <div class="grow"><label class="field">この着順の人から徴収</label>
               <select ${d.babaEnabled?'':'disabled'} onchange="Settings.updateDraft('babaFromRank', parseInt(this.value))">
-                ${Array.from({length:d.playerCount-1},(_,i)=>i+2).map(r=>`<option value="${r}" ${d.babaFromRank===r?'selected':''}>${r}着から</option>`).join('')}
+                ${Array.from({length:d.playerCount-1},(_,i)=>i+2).map(r=>`<option value="${r}" ${d.babaFromRank===r?'selected':''}>${r}着のみ</option>`).join('')}
               </select>
             </div>
             <div class="grow"><label class="field">1人あたりの場代（ウマと同じ単位）</label>
               <input type="number" step="1" value="${d.babaAmount}" ${d.babaEnabled?'':'disabled'} oninput="Settings.updateDraft('babaAmount', numOrZero(this.value))">
             </div>
           </div>
-          <div class="hint">例：2着から5に設定すると、2着以下の全員から5点（レートが1000点=100Pなら500P相当）ずつ差し引き、場代として集計します。</div>
+          <div class="hint">例：2着のみ・5に設定すると、2着の人からだけ5点（レートが1000点=100Pなら500P相当）差し引き、場代として集計します（3着・4着は対象外）。</div>
         </div>`)}
 
       <div class="section-title">点数計算</div>
       ${toggleRow('符計算あり','30符/40符などの符×翻テーブルで点数計算する。オフの場合は符を数えず、指折り翻数30符計算（符は常に30符固定で翻数だけを数えて点数を決める）', d.fuCalculation, "Settings.toggleDraft('fuCalculation')")}
       ${toggleRow('ツモ損あり','ツモ和了時、ロン換算より受け取り合計が少なくなる方式', d.tsumoLoss, "Settings.toggleDraft('tsumoLoss')")}
+      <div class="field-wrap"><label class="field">同点の際のルール</label>
+        <select onchange="Settings.updateDraft('tiebreakRule', this.value)">
+          <option value="split" ${d.tiebreakRule==='split'?'selected':''}>折半（同着扱い）</option>
+          <option value="atamahane" ${d.tiebreakRule==='atamahane'?'selected':''}>頭ハネ（着順を決める）</option>
+        </select>
+        <div class="hint">頭ハネの場合、対局結果の入力時に同点者の着順を選ぶ必要があります。</div>
+      </div>
 
       <div class="section-title">基本ルール</div>
       ${toggleRow('喰いタン','食い仕掛けでのタンヤオを許容する', d.kuitanAri, "Settings.toggleDraft('kuitanAri')")}
@@ -2492,6 +2680,8 @@ function renderRuleModal(){
             <option value="not_required" ${d.furitenOpenRequired==='not_required'?'selected':''}>オープンの必要なし</option>
             <option value="required" ${d.furitenOpenRequired==='required'?'selected':''}>オープンの必要あり</option>
           </select></div>`)}
+      ${toggleRow('ダブロン','1つの牌に対して2人が同時にロンできる', d.doubleRonAri, "Settings.toggleDraft('doubleRonAri')")}
+      ${d.playerCount===4?toggleRow('トリロン','1つの牌に対して3人が同時にロンできる（4人打ちのみ）', d.tripleRonAri, "Settings.toggleDraft('tripleRonAri')"):''}
 
       <div class="section-title">流し</div>
       ${toggleRow('流しを使う','流し満貫などの流局時役を使う', d.nagashiEnabled, "Settings.toggleDraft('nagashiEnabled')",
@@ -2694,14 +2884,17 @@ function renderRuleDetailModal(){
     ['縛り', {none:'縛りなし',deai:'出上がり2飜（偶然2飜）',kanzen:'完全2飜（確定2飜）',other:'その他('+r.shibariHan+'飜)'}[r.shibariType]],
     ['ウマ', r.uma.join(' / ')],
     ['オカ（追加ボーナス）', r.okaEnabled ? r.oka : 'なし'],
-    ['場代', r.babaEnabled ? (r.babaFromRank+'着から1人'+r.babaAmount+'点') : 'なし'],
+    ['場代', r.babaEnabled ? (r.babaFromRank+'着のみ1人'+r.babaAmount+'点') : 'なし'],
     ['符計算/ツモ損', YN(r.fuCalculation)+' / '+YN(r.tsumoLoss)],
+    ['同点の際のルール', r.tiebreakRule==='atamahane' ? '頭ハネ（着順を決める）' : '折半（同着扱い）'],
     ['喰いタン/後付け/ツモピン', YN(r.kuitanAri)+' / '+YN(r.atozukeAri)+' / '+YN(r.tsumoPinAri)],
     ['一発/裏ドラ/カン裏', YN(r.ippatsuAri)+' / '+YN(r.uradoraAri)+' / '+YN(r.kanUradoraAri)],
     ['トビ終了', r.tobiAri ? ((r.tobiRule==='zero'?'0点で終了':'0点継続(-100以下)')+'・罰符'+r.tobiPenalty) : 'なし'],
     ['赤ドラ', r.akaDoraEnabled ? `萬${r.akaDoraMan}/筒${r.akaDoraPin}/索${r.akaDoraSou}` : 'なし'],
     ['ノーテン罰符', r.notenPenaltyEnabled ? r.notenPenalty+'（積み棒1本あたり）' : 'なし'],
     ['フリテン', r.furitenAri ? (r.furitenOpenRequired==='required'?'オープン必要':'オープン不要') : 'なし'],
+    ['ダブロン', r.doubleRonAri ? 'ダブロンあり' : '頭ハネ'],
+    ...(r.playerCount===4 ? [['トリロン', r.tripleRonAri ? 'トリロンあり' : 'トリロンの場合流局']] : []),
     ['流し', r.nagashiEnabled ? ({mangan:'流し満貫',haneman:'流し跳満',baiman:'流し倍満',sanbaiman:'流し3倍満',yakuman:'流し役満'}[r.nagashiTier]+'・チップ発動:'+YN(r.nagashiChipEnabled)) : 'なし'],
     ['追加役', [r.sanpuuAri?'三風':null, r.sanrenkouAri?'三連刻':null, (r.otherYakuEnabled&&r.otherYakuText)?r.otherYakuText:null].filter(Boolean).join('・') || 'なし'],
     ['数え役満', r.kazoeYakumanEnabled ? (r.kazoeYakumanHan+'翻・役満祝儀:'+YN(r.kazoeYakumanChipAri)) : 'なし'],
@@ -2803,19 +2996,15 @@ const ScoreShare = {
         DB.rules.push(rule);
       }
       if(!rule) rule = DB.rules[0];
-      const players = (payload.players||[]).map(p=>{
-        let m = DB.members.find(mm=>mm.name===p.name);
-        if(!m){
-          m = {id:uid(), name:p.name, color: PALETTE[DB.members.length % PALETTE.length]};
-          DB.members.push(m);
-        }
-        return {memberId:m.id, rawScore:p.rawScore, rank:p.rank, point:p.point};
+      const names = (payload.players||[]).map(p=>p.name);
+      resolveMemberNames(names, (nameToId)=>{
+        const players = (payload.players||[]).map(p=>({memberId:nameToId[p.name], rawScore:p.rawScore, rank:p.rank, point:p.point}));
+        DB.history.push({id:uid(), date:payload.date, ruleId:rule.id, players});
+        persist('members'); persist('rules'); persist('history');
+        UI.receiveScoreCode=null;
+        renderInfoModal('受け取りました','スコアを受け取りました。');
+        render();
       });
-      DB.history.push({id:uid(), date:payload.date, ruleId:rule.id, players});
-      persist('members'); persist('rules'); persist('history');
-      UI.receiveScoreCode=null;
-      renderInfoModal('受け取りました','スコアを受け取りました。');
-      render();
     }catch(e){ console.error(e); renderInfoModal('受け取りに失敗しました', firestoreErrorMessage(e, 'mahjong_shared_scores')); }
   }
 };
