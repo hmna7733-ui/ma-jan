@@ -273,9 +273,8 @@ input:focus,select:focus,textarea:focus{outline:none;border-color:var(--accent);
     <div class="date" id="headerDate"></div>
   </div>
   <div class="row" style="align-items:center;gap:10px">
-    <button class="btn sm secondary" id="refreshSyncBtn" onclick="manualRefreshSync()" title="最新のデータを取得">⟳</button>
-    <span id="accountName" style="color:rgba(255,255,255,.8);font-size:11.5px;font-weight:700"></span>
     <span class="sync-dot" id="syncDot" title="同期状態"></span>
+    <span id="accountName" style="color:rgba(255,255,255,.8);font-size:11.5px;font-weight:700"></span>
     <button class="btn sm secondary" onclick="Router.go('settings')">⚙</button>
   </div>
 </div>
@@ -341,32 +340,6 @@ function updateAccountNameDisplay(){
   const el = document.getElementById('accountName');
   if(!el) return;
   el.textContent = (currentUser && currentUser.email) ? currentUser.email.split('@')[0] : '';
-}
-
-async function manualRefreshSync(){
-  if(!fbAuth || !currentUser){ renderInfoModal('ログインが必要です','クラウド同期にはログインが必要です。'); return; }
-  const btn = document.getElementById('refreshSyncBtn');
-  if(btn){ btn.disabled = true; btn.textContent = '…'; }
-  try{
-    const doc = await userDocRef().get({source:'server'});
-    if(doc.exists){
-      const remote = JSON.parse(doc.data().payload || '{}');
-      DB.rules = remote.rules || DB.rules;
-      DB.members = remote.members || DB.members;
-      DB.history = remote.history || DB.history;
-      DB.chipTx = remote.chipTx || DB.chipTx || [];
-      DB.groups = remote.groups || DB.groups || [];
-      DB.rules.forEach(ensureRuleDefaults);
-      DB.members.forEach(ensureMemberDefaults);
-      localStorage.setItem(LS_KEY, JSON.stringify(DB));
-      render();
-    }
-  }catch(e){
-    console.error(e);
-    renderInfoModal('更新に失敗しました', firestoreErrorMessage(e));
-  }finally{
-    if(btn){ btn.disabled = false; btn.textContent = '⟳'; }
-  }
 }
 
 function handleAuthChange(user){
@@ -508,10 +481,11 @@ const PALETTE = ['#e07a5f','#3d8bd4','#f2b134','#6a994e','#9d4edd','#e6538c','#2
 function esc(s){ return String(s??'').replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 
 /* Firestoreのエラー内容を分かりやすい日本語に変換（転送・同期系の失敗診断用） */
-function firestoreErrorMessage(e){
+function firestoreErrorMessage(e, collectionName){
   const code = e && e.code;
   if(code === 'permission-denied'){
-    return 'Firestoreのセキュリティルールでこの操作が許可されていません。「mahjong_shared_rules」「mahjong_shared_scores」コレクションへの読み書きが、ログイン済みユーザー（request.auth != null）に許可されているか、Firebaseコンソールでご確認ください。';
+    const col = collectionName ? `「${collectionName}」` : 'この';
+    return `Firestoreのセキュリティルールでこの操作が許可されていません。${col}コレクションへの読み書きが、ログイン済みユーザー（request.auth != null）に許可されているか、Firebaseコンソールでご確認ください。`;
   }
   if(code === 'unavailable' || code === 'deadline-exceeded'){
     return '通信環境が不安定なようです。電波の良い場所でもう一度お試しください。';
@@ -734,34 +708,36 @@ function renderHome(){
 
   if(rule.chipEnabled){
     const totals = computeChipTotals(todayStr());
-    const todayChipTx = DB.chipTx.filter(t=>t.date===todayStr());
+    const todayTransfers = DB.chipTx.filter(t=>t.date===todayStr() && t.type==='transfer');
     html += `<div class="card"><h3>🎫 本日のチップ（1枚${rule.chipValue}円）</h3>`;
     if(UI.home.memberIds.length===0){
       html += `<div class="small-note">メンバーを選択すると表示されます</div>`;
     } else {
-      html += `<table class="score-board"><thead><tr><th>名前</th><th>枚数</th><th>円換算</th></tr></thead><tbody>`;
+      html += `<div class="small-note" style="margin-bottom:8px">最終差枚数（プラスは勝ち分、マイナスは負け分）を入力してください。</div>`;
       UI.home.memberIds.forEach(mid=>{
-        const cnt = totals[mid]||0;
-        const yen = cnt*rule.chipValue;
-        html += `<tr><td>${avatarHtml(mid,22)} ${esc(memberName(mid))}</td><td class="${cnt>0?'pos':cnt<0?'neg':''}">${sign(cnt)}</td><td class="${yen>0?'pos':yen<0?'neg':''}">${sign(yen)}円</td></tr>`;
+        const finalVal = ChipTracker.getFinalValue(mid, todayStr());
+        const total = totals[mid]||0;
+        const yen = total*rule.chipValue;
+        html += `<div class="row" style="align-items:center;gap:10px;margin-bottom:8px">
+          <div class="grow" style="display:flex;align-items:center;gap:6px">${avatarHtml(mid,24)} ${esc(memberName(mid))}</div>
+          <input type="text" inputmode="numeric" pattern="-?[0-9]*" value="${finalVal}" style="width:80px;text-align:right" onchange="ChipTracker.setFinalValue('${mid}', this.value)">
+          <span class="small-note" style="width:30px">枚</span>
+          <span class="${yen>0?'pos':yen<0?'neg':''}" style="width:80px;text-align:right;font-weight:700">${sign(yen)}円</span>
+        </div>`;
       });
-      html += `</tbody></table>`;
     }
-    html += `<div class="row" style="margin-top:10px">
-      <button class="btn sm secondary grow" onclick="ChipTracker.openAdjust()">枚数を調整</button>
-      <button class="btn sm secondary grow" onclick="ChipTracker.openTransfer()">貸し借りを記録</button>
-    </div>`;
-    if(todayChipTx.length){
+    html += `<button class="btn sm secondary block" onclick="ChipTracker.openTransfer()">貸し借りを記録</button>`;
+    if(todayTransfers.length){
       html += `<div style="margin-top:10px">`;
-      [...todayChipTx].reverse().forEach(t=>{
+      [...todayTransfers].reverse().forEach(t=>{
         html += `<div class="row" style="justify-content:space-between;align-items:center;padding:7px 0;border-bottom:1px solid var(--border);font-size:12.5px">
-          <span>${t.type==='transfer'?`${esc(memberName(t.fromId))} → ${esc(memberName(t.toId))} ${t.amount}枚`:`${esc(memberName(t.memberId))} ${sign(t.amount)}枚${t.memo?' ('+esc(t.memo)+')':''}`}</span>
+          <span>貸す側: ${esc(memberName(t.fromId))} → 借りる側: ${esc(memberName(t.toId))}（${t.amount}枚）</span>
           <button class="btn sm danger" onclick="ChipTracker.remove('${t.id}')">削除</button>
         </div>`;
       });
       html += `</div>`;
     }
-    html += `<div class="hint" style="margin-top:8px">1日の最後に最終枚数だけ「枚数を調整」でまとめて入力してもOK。途中で誰かに渡した場合は「貸し借りを記録」を使うと両者の枚数が自動で増減します。</div>`;
+    html += `<div class="hint" style="margin-top:8px">貸す側はその分プラス、借りる側はマイナスの収支として計算されます。最終差枚数と合算されます。</div>`;
     html += `</div>`;
   }
 
@@ -1010,9 +986,10 @@ function computeChipTotals(date){
   const totals={};
   DB.chipTx.filter(t=>t.date===date).forEach(t=>{
     if(t.type==='transfer'){
-      totals[t.fromId]=(totals[t.fromId]||0)-t.amount;
-      totals[t.toId]=(totals[t.toId]||0)+t.amount;
-    } else {
+      // 貸す側はプラス収支、借りる側はマイナス収支（貸した分は後で返してもらう＝貸した人の取り分）
+      totals[t.fromId]=(totals[t.fromId]||0)+t.amount;
+      totals[t.toId]=(totals[t.toId]||0)-t.amount;
+    } else if(t.type==='final'){
       totals[t.memberId]=(totals[t.memberId]||0)+t.amount;
     }
   });
@@ -1020,10 +997,18 @@ function computeChipTotals(date){
 }
 
 const ChipTracker = {
-  openAdjust(){
-    UI.chipModal='adjust';
-    UI.chipForm={ memberId: UI.home.memberIds[0]||(DB.members[0]&&DB.members[0].id)||'', amount:'', memo:'' };
-    renderChipModal();
+  getFinalValue(mid, date){
+    const t = DB.chipTx.find(x=>x.date===date && x.type==='final' && x.memberId===mid);
+    return t ? t.amount : 0;
+  },
+  setFinalValue(mid, val){
+    const amt = numOrZero(val);
+    const date = todayStr();
+    const existing = DB.chipTx.find(x=>x.date===date && x.type==='final' && x.memberId===mid);
+    if(existing){ existing.amount = amt; }
+    else{ DB.chipTx.push({ id:uid(), date, type:'final', memberId:mid, amount:amt }); }
+    persist('chipTx');
+    render();
   },
   openTransfer(){
     const ids = UI.home.memberIds.length? UI.home.memberIds : DB.members.map(m=>m.id);
@@ -1033,18 +1018,10 @@ const ChipTracker = {
   },
   close(){ UI.chipModal=null; document.getElementById('modalRoot').innerHTML=''; },
   updateForm(key,val){ UI.chipForm[key]=val; },
-  saveAdjust(){
-    const amt=numOrZero(UI.chipForm.amount);
-    if(!UI.chipForm.memberId || amt===0){ renderInfoModal('入力が足りません','メンバーと0以外の増減枚数を入力してください。'); return; }
-    DB.chipTx.push({ id:uid(), date:todayStr(), type:'adjust', memberId:UI.chipForm.memberId, amount:amt, memo:UI.chipForm.memo||'' });
-    persist('chipTx');
-    UI.chipModal=null; document.getElementById('modalRoot').innerHTML='';
-    render();
-  },
   saveTransfer(){
     const amt=numOrZero(UI.chipForm.amount);
     if(!UI.chipForm.fromId || !UI.chipForm.toId || UI.chipForm.fromId===UI.chipForm.toId || amt<=0){
-      renderInfoModal('入力が足りません','渡す人・受け取る人（別々）・1以上の枚数を入力してください。'); return;
+      renderInfoModal('入力が足りません','貸す側・借りる側（別々）・1以上の枚数を入力してください。'); return;
     }
     DB.chipTx.push({ id:uid(), date:todayStr(), type:'transfer', fromId:UI.chipForm.fromId, toId:UI.chipForm.toId, amount:amt });
     persist('chipTx');
@@ -1061,37 +1038,23 @@ const ChipTracker = {
 
 function renderChipModal(){
   if(!UI.chipModal){ return; }
-  const mode=UI.chipModal, f=UI.chipForm;
-  let inner='';
-  if(mode==='adjust'){
-    inner = `
-      <div class="modal-head"><h2>チップ枚数を調整</h2><button class="close-x" onclick="ChipTracker.close()">✕</button></div>
-      <div class="field-wrap"><label class="field">対象メンバー</label>
-        <select onchange="ChipTracker.updateForm('memberId', this.value)">
-          ${DB.members.map(m=>`<option value="${m.id}" ${f.memberId===m.id?'selected':''}>${esc(m.name)}</option>`).join('')}
-        </select></div>
-      <div class="field-wrap"><label class="field">増減枚数（マイナス可。例：3 / -2）</label>
-        <input type="number" step="1" value="${f.amount}" oninput="ChipTracker.updateForm('amount', this.value)"></div>
-      <div class="field-wrap"><label class="field">メモ（任意）</label>
-        <input type="text" value="${esc(f.memo||'')}" oninput="ChipTracker.updateForm('memo', this.value)" placeholder="例：役満、最終枚数の確定など"></div>
-      <button class="btn block" onclick="ChipTracker.saveAdjust()">記録する</button>`;
-  } else {
-    inner = `
+  const f=UI.chipForm;
+  const inner = `
       <div class="modal-head"><h2>チップの貸し借りを記録</h2><button class="close-x" onclick="ChipTracker.close()">✕</button></div>
       <div class="row">
-        <div class="field-wrap grow"><label class="field">渡す人（枚数が減る）</label>
+        <div class="field-wrap grow"><label class="field">貸す側</label>
           <select onchange="ChipTracker.updateForm('fromId', this.value)">
             ${DB.members.map(m=>`<option value="${m.id}" ${f.fromId===m.id?'selected':''}>${esc(m.name)}</option>`).join('')}
           </select></div>
-        <div class="field-wrap grow"><label class="field">受け取る人（枚数が増える）</label>
+        <div class="field-wrap grow"><label class="field">借りる側</label>
           <select onchange="ChipTracker.updateForm('toId', this.value)">
             ${DB.members.map(m=>`<option value="${m.id}" ${f.toId===m.id?'selected':''}>${esc(m.name)}</option>`).join('')}
           </select></div>
       </div>
       <div class="field-wrap"><label class="field">枚数</label>
         <input type="number" step="1" min="1" value="${f.amount}" oninput="ChipTracker.updateForm('amount', this.value)"></div>
-      <button class="btn block" onclick="ChipTracker.saveTransfer()">記録する</button>`;
-  }
+      <div class="hint">貸す側はその分プラス、借りる側はマイナスの収支として計算されます。</div>
+      <button class="btn block" style="margin-top:10px" onclick="ChipTracker.saveTransfer()">記録する</button>`;
   document.getElementById('modalRoot').innerHTML = `<div class="modal-overlay" onclick="if(event.target===this) ChipTracker.close()"><div class="modal">${inner}</div></div>`;
 }
 
@@ -1489,7 +1452,7 @@ const Settings = {
       renderShareCodeModal();
     }catch(e){
       console.error(e);
-      renderInfoModal('転送に失敗しました', firestoreErrorMessage(e));
+      renderInfoModal('転送に失敗しました', firestoreErrorMessage(e, 'mahjong_shared_rules'));
     }
   },
   closeShareCode(){ UI.shareCode=null; document.getElementById('modalRoot').innerHTML=''; },
@@ -1525,7 +1488,7 @@ const Settings = {
       render();
     }catch(e){
       console.error(e);
-      renderInfoModal('受け取りに失敗しました', firestoreErrorMessage(e));
+      renderInfoModal('受け取りに失敗しました', firestoreErrorMessage(e, 'mahjong_shared_rules'));
     }
   }
 };
@@ -2021,7 +1984,7 @@ const ScoreShare = {
       });
       UI.scoreShareCode = code;
       renderScoreShareCodeModal();
-    }catch(e){ console.error(e); renderInfoModal('送信に失敗しました', firestoreErrorMessage(e)); }
+    }catch(e){ console.error(e); renderInfoModal('送信に失敗しました', firestoreErrorMessage(e, 'mahjong_shared_scores')); }
   },
   closeScoreShareCode(){ UI.scoreShareCode=null; document.getElementById('modalRoot').innerHTML=''; },
   openReceiveModal(){ UI.receiveScoreCode=''; renderReceiveScoreModal(); },
@@ -2054,7 +2017,7 @@ const ScoreShare = {
       UI.receiveScoreCode=null;
       renderInfoModal('受け取りました','スコアを受け取りました。');
       render();
-    }catch(e){ console.error(e); renderInfoModal('受け取りに失敗しました', firestoreErrorMessage(e)); }
+    }catch(e){ console.error(e); renderInfoModal('受け取りに失敗しました', firestoreErrorMessage(e, 'mahjong_shared_scores')); }
   }
 };
 
