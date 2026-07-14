@@ -206,6 +206,26 @@ input:focus,select:focus,textarea:focus{outline:none;border-color:var(--accent);
 .diff-ok{color:#1a7a45;font-weight:700;}
 .diff-bad{color:var(--danger);font-weight:700;}
 .uma-input-row{display:flex;gap:8px;align-items:center;margin-bottom:7px;}
+.drum-row{display:flex;gap:8px;align-items:center;justify-content:center;margin:8px 0;}
+.drum-digit{width:46px;display:flex;flex-direction:column;align-items:center;gap:4px;}
+.drum-digit .dbtn{width:46px;height:32px;border:none;background:#f1efe9;border-radius:9px;font-size:15px;font-weight:800;color:var(--accent-dark);cursor:pointer;}
+.drum-digit .dbtn:active{background:var(--accent-light);}
+.drum-digit .dval{width:46px;height:44px;display:flex;align-items:center;justify-content:center;font-size:22px;font-weight:800;color:var(--text);background:#fbfbf9;border:1.5px solid var(--border);border-radius:10px;}
+.sign-toggle{width:52px;height:52px;border-radius:12px;border:none;font-size:20px;font-weight:800;cursor:pointer;}
+.sign-toggle.neg{background:linear-gradient(180deg,#f4c9c2,#e7a79d);color:#7a2015;}
+.sign-toggle.pos{background:var(--accent-light);color:var(--accent-dark);}
+.mode-switch{display:flex;gap:8px;margin-bottom:14px;background:#f1efe9;padding:4px;border-radius:12px;}
+.mode-switch .ms-opt{flex:1;text-align:center;padding:8px;border-radius:9px;font-size:12.5px;font-weight:700;color:var(--sub);cursor:pointer;}
+.mode-switch .ms-opt.active{background:linear-gradient(180deg,var(--accent),var(--accent2));color:#fff;}
+.fab-record{
+  position:fixed;right:18px;bottom:calc(96px + env(safe-area-inset-bottom));
+  width:60px;height:60px;border-radius:50%;
+  background:linear-gradient(180deg,var(--accent),var(--accent2));
+  color:#fff;font-size:28px;font-weight:800;border:none;
+  box-shadow:0 8px 20px -4px rgba(31,122,82,.55), 0 2px 0 rgba(0,0,0,.15);
+  z-index:22;display:flex;align-items:center;justify-content:center;cursor:pointer;
+}
+.fab-record:disabled{opacity:.35;box-shadow:none;}
 .uma-input-row .lbl{width:36px;font-size:12.5px;color:var(--sub);font-weight:700;}
 .preset-row{display:flex;gap:6px;flex-wrap:wrap;margin:8px 0 4px;}
 .preset-btn{font-size:11.5px;padding:6px 10px;border-radius:9px;background:#f1efe9;border:1px solid var(--border);color:var(--sub);cursor:pointer;font-weight:700;}
@@ -491,7 +511,7 @@ function ensureRuleDefaults(r){
     kokushiAnkanAri:false, paoAri:false,
     extraYakuman:[],
     doubleYakumanPointAri:true, doubleYakumanChipAri:false, stackYakumanAri:true,
-    chiitoi4Ari:false, yonchoroAri:false, shiroPocchiAri:false,
+    chiitoi4Ari:false, yonchoroAri:false, shiroPocchiAri:false, hanaPaiAri:false, yakitoriAri:false,
     rounding:'up', roundingDetailEnabled:false,
     roundingThresholdValue:30000, roundingAboveMode:'down', roundingBelowMode:'up',
     rateEnabled:false, rate:0,
@@ -636,7 +656,7 @@ function renderHome(){
   }
   html += `</div></div>`;
   const readyToInput = UI.home.memberIds.length===rule.playerCount;
-  html += `<button class="btn block" style="margin-bottom:16px" ${readyToInput?'':'disabled'} onclick="InputForm.open()">＋ 対局結果を記録</button>`;
+  html += `<button class="fab-record" ${readyToInput?'':'disabled'} onclick="InputForm.open()" title="対局結果を記録">＋</button>`;
   html += `<div class="card"><h3>📈 本日のトータルスコア</h3>`;
   if(todaySessions.length===0){
     html += `<div class="small-note">本日はまだ記録がありません。</div>`;
@@ -719,6 +739,9 @@ const Home = {
 };
 
 /* ============ 対局入力フォーム ============ */
+const DRUM_DIGITS = 4;
+const SCORE_MODE_KEY = 'mj_score_input_mode';
+
 const InputForm = {
   open(){
     UI.editingHistoryId=null;
@@ -726,9 +749,14 @@ const InputForm = {
     const suffixLen = (rule.stick500Enabled || rule.stick100Enabled) ? 2 : 3;
     const suffix = '0'.repeat(suffixLen);
     UI.formEntries={};
-    UI.home.memberIds.forEach(id=>UI.formEntries[id]=suffix);
+    UI.formDrum={};
+    UI.home.memberIds.forEach(id=>{
+      UI.formEntries[id]=suffix;
+      UI.formDrum[id]={ sign:1, digits:Array(DRUM_DIGITS).fill('0') };
+    });
     UI.formRuleId=rule.id;
     UI.formMemberIds=[...UI.home.memberIds];
+    UI.scoreInputMode = localStorage.getItem(SCORE_MODE_KEY) || 'direct';
     UI.showInputForm=true;
     renderModal();
   },
@@ -739,25 +767,87 @@ const InputForm = {
     UI.formRuleId=s.ruleId;
     UI.formMemberIds=s.players.map(p=>p.memberId);
     UI.formEntries={};
-    s.players.forEach(p=>UI.formEntries[p.memberId]=String(p.rawScore));
+    UI.formDrum={};
+    const rule=getRule(s.ruleId);
+    const suffixLen = rule ? ((rule.stick500Enabled || rule.stick100Enabled) ? 2 : 3) : 2;
+    s.players.forEach(p=>{
+      UI.formEntries[p.memberId]=String(p.rawScore);
+      InputForm.syncDrumFromEntry(p.memberId, suffixLen);
+    });
+    UI.scoreInputMode = localStorage.getItem(SCORE_MODE_KEY) || 'direct';
     UI.showInputForm=true;
     renderModal();
   },
+  currentSuffixLen(){
+    const rule=getRule(UI.formRuleId);
+    return (rule && (rule.stick500Enabled || rule.stick100Enabled)) ? 2 : 3;
+  },
+  setMode(mode){
+    const suffixLen = InputForm.currentSuffixLen();
+    if(mode==='drum'){
+      UI.formMemberIds.forEach(mid=>InputForm.syncDrumFromEntry(mid, suffixLen));
+    }
+    UI.scoreInputMode = mode;
+    localStorage.setItem(SCORE_MODE_KEY, mode);
+    renderModal();
+  },
+  syncDrumFromEntry(mid, suffixLen){
+    let val = UI.formEntries[mid] || '';
+    const neg = val.startsWith('-');
+    const digitsOnly = val.replace('-','').replace(/[^0-9]/g,'');
+    let leading = digitsOnly.length > suffixLen ? digitsOnly.slice(0, digitsOnly.length-suffixLen) : '';
+    leading = leading.padStart(DRUM_DIGITS,'0').slice(-DRUM_DIGITS);
+    UI.formDrum[mid] = { sign: neg?-1:1, digits: leading.split('') };
+  },
+  syncEntryFromDrum(mid){
+    const suffixLen = InputForm.currentSuffixLen();
+    const suffix = '0'.repeat(suffixLen);
+    const d = UI.formDrum[mid];
+    let leadingStr = d.digits.join('').replace(/^0+(?=\d)/,'');
+    if(leadingStr==='') leadingStr='0';
+    UI.formEntries[mid] = (d.sign<0?'-':'') + leadingStr + suffix;
+  },
   updateScore(mid,val){
-    const cleaned = val.replace(/[^0-9]/g,'');
+    let cleaned = val.replace(/[^0-9-]/g,'');
+    const neg = cleaned.startsWith('-');
+    cleaned = cleaned.replace(/-/g,'');
+    cleaned = (neg?'-':'') + cleaned;
     UI.formEntries[mid]=cleaned;
     const el = document.getElementById('score-input-'+mid);
     if(el && el.value !== cleaned) el.value = cleaned;
     updateScoreDiffDisplay();
+  },
+  toggleSign(mid){
+    if(UI.scoreInputMode==='drum'){
+      UI.formDrum[mid].sign *= -1;
+      InputForm.syncEntryFromDrum(mid);
+      renderModal();
+    } else {
+      let val = UI.formEntries[mid] || '';
+      val = val.startsWith('-') ? val.slice(1) : ('-'+val);
+      UI.formEntries[mid] = val;
+      const el = document.getElementById('score-input-'+mid);
+      if(el) el.value = val;
+      updateScoreDiffDisplay();
+    }
+  },
+  drumChange(mid, idx, delta){
+    const d = UI.formDrum[mid];
+    let v = (parseInt(d.digits[idx],10) + delta + 10) % 10;
+    d.digits[idx] = String(v);
+    InputForm.syncEntryFromDrum(mid);
+    renderModal();
   },
   close(){ UI.showInputForm=false; UI.editingHistoryId=null; renderModal(); },
   requestClose(){
     showConfirmModal('保存せずに閉じますか？','入力した内容は保存されません。閉じてもよいですか？', ()=>{ InputForm.close(); }, '閉じる', ()=>{ renderModal(); });
   },
   save(){
+    if(UI._saving) return;
     const rule=getRule(UI.formRuleId);
     const entries=UI.formMemberIds.map(mid=>({memberId:mid, rawScore:numOrZero(UI.formEntries[mid])}));
-    if(entries.some(e=>UI.formEntries[e.memberId]==='')){ renderInfoModal('入力が足りません','全員分の最終持ち点を入力してください。'); return; }
+    if(entries.some(e=>UI.formEntries[e.memberId]==='' || UI.formEntries[e.memberId]==='-')){ renderInfoModal('入力が足りません','全員分の最終持ち点を入力してください。'); return; }
+    UI._saving = true;
     const computed=computeSession(rule, entries);
     const players=computed.map(c=>({memberId:c.memberId, rawScore:c.rawScore, rank:c.rank, point:c.point}));
     if(UI.editingHistoryId){
@@ -768,6 +858,8 @@ const InputForm = {
     }
     persist('history');
     UI.showInputForm=false; UI.editingHistoryId=null;
+    UI._saving = false;
+    document.getElementById('modalRoot').innerHTML='';
     render();
   }
 };
@@ -792,16 +884,42 @@ function renderModal(scoreOnly){
   const expectedTotal=rule.startPoints*UI.formMemberIds.length;
   const currentTotal=UI.formMemberIds.reduce((a,mid)=>a+numOrZero(UI.formEntries[mid]),0);
   const diff=currentTotal-expectedTotal;
+  const mode = UI.scoreInputMode || 'direct';
+  const rowsHtml = UI.formMemberIds.map(mid=>{
+    if(mode==='drum'){
+      const d = UI.formDrum[mid];
+      return `<div class="field-wrap">
+        <label class="field">${avatarHtml(mid,20)} ${esc(memberName(mid))} の最終持ち点</label>
+        <div class="drum-row">
+          <button class="sign-toggle ${d.sign<0?'neg':'pos'}" onclick="InputForm.toggleSign('${mid}')">${d.sign<0?'－':'＋'}</button>
+          ${d.digits.map((dig,idx)=>`
+            <div class="drum-digit">
+              <button class="dbtn" onclick="InputForm.drumChange('${mid}',${idx},1)">▲</button>
+              <div class="dval">${dig}</div>
+              <button class="dbtn" onclick="InputForm.drumChange('${mid}',${idx},-1)">▼</button>
+            </div>`).join('')}
+        </div>
+        <div class="small-note" style="text-align:center">${UI.formEntries[mid]} 点</div>
+      </div>`;
+    }
+    return `<div class="field-wrap">
+      <label class="field">${avatarHtml(mid,20)} ${esc(memberName(mid))} の最終持ち点</label>
+      <div class="row" style="gap:8px">
+        <button class="sign-toggle ${(UI.formEntries[mid]||'').startsWith('-')?'neg':'pos'}" onclick="InputForm.toggleSign('${mid}')">${(UI.formEntries[mid]||'').startsWith('-')?'－':'＋'}</button>
+        <input type="text" id="score-input-${mid}" inputmode="numeric" pattern="-?[0-9]*" value="${UI.formEntries[mid]}" onfocus="this.setSelectionRange(0,0)" oninput="InputForm.updateScore('${mid}', this.value)" style="flex:1">
+      </div>
+    </div>`;
+  }).join('');
   const html=`
   <div class="modal-overlay" onclick="if(event.target===this) InputForm.requestClose()">
     <div class="modal">
       <div class="modal-head"><h2>${UI.editingHistoryId?'対局結果を編集':'対局結果を記録'}</h2><button class="close-x" onclick="InputForm.requestClose()">✕</button></div>
       <div class="small-note" style="margin-bottom:12px">ルール: ${esc(rule.name)}（返し点 ${rule.returnPoints} / 開始点 ${rule.startPoints}）</div>
-      ${UI.formMemberIds.map(mid=>`
-        <div class="field-wrap">
-          <label class="field">${avatarHtml(mid,20)} ${esc(memberName(mid))} の最終持ち点</label>
-          <input type="text" id="score-input-${mid}" inputmode="numeric" pattern="[0-9]*" value="${UI.formEntries[mid]}" onfocus="this.setSelectionRange(0,0)" oninput="InputForm.updateScore('${mid}', this.value)">
-        </div>`).join('')}
+      <div class="mode-switch">
+        <div class="ms-opt ${mode==='direct'?'active':''}" onclick="InputForm.setMode('direct')">直接入力</div>
+        <div class="ms-opt ${mode==='drum'?'active':''}" onclick="InputForm.setMode('drum')">ドラム式</div>
+      </div>
+      ${rowsHtml}
       <div class="hint" id="scoreDiffHint">合計: ${currentTotal} 点 / 規定合計: ${expectedTotal} 点
         <span class="${diff===0?'diff-ok':'diff-bad'}"> (${diff===0?'一致':'差分 '+sign(diff)})</span>
       </div>
@@ -1547,6 +1665,8 @@ function renderRuleModal(){
       ${toggleRow('チートイ4枚使い','同じ牌4枚を2対子として使用可能（アメリカンチートイ）', d.chiitoi4Ari, "Settings.toggleDraft('chiitoi4Ari')")}
       ${toggleRow('4チョロ','4チョロのルールを使う', d.yonchoroAri, "Settings.toggleDraft('yonchoroAri')")}
       ${toggleRow('白ぽっち','リーチ後の1巡目のツモで白ぽっち牌を引いた際にオールマイティ牌となる', d.shiroPocchiAri, "Settings.toggleDraft('shiroPocchiAri')")}
+      ${toggleRow('花牌','花牌を使用する', d.hanaPaiAri, "Settings.toggleDraft('hanaPaiAri')")}
+      ${toggleRow('やきとり','ノーあがりで終了した人にペナルティを課す', d.yakitoriAri, "Settings.toggleDraft('yakitoriAri')")}
 
       ${d.playerCount===3?`
       <div class="section-title">3人打ち専用ルール</div>
@@ -1670,6 +1790,7 @@ function renderRuleDetailModal(){
     ['役満祝儀', r.chipEnabled ? ('ツモ'+r.yakumanTsumoChip+'枚オール/ロン'+r.yakumanRonChip+'枚') : 'なし'],
     ['対局形式', r.gameType==='hanchan'?'半荘戦':'東風戦'],
     ['開始点/返し点', r.startPoints+' / '+r.returnPoints],
+    ['点棒', '500点棒:'+YN(r.stick500Enabled)+' / 100点棒:'+YN(r.stick100Enabled)],
     ['連チャン方式', {tenpai_keishiki:'聴牌連（形式聴牌あり）',tenpai_yaku:'聴牌連（役あり聴牌のみ）',nagare:'流局連',none:'連荘なし'}[r.renchanType]],
     ['縛り', {none:'縛りなし',deai:'出上がり2飜（偶然2飜）',kanzen:'完全2飜（確定2飜）',other:'その他('+r.shibariHan+'飜)'}[r.shibariType]],
     ['ウマ', r.uma.join(' / ')],
@@ -1688,7 +1809,7 @@ function renderRuleDetailModal(){
     ['追加役満', (r.extraYakuman||[]).length ? r.extraYakuman.map(y=>y.type==='other'?(y.text||'その他'):extraYakumanLabel[y.type]).join('・') : 'なし'],
     ['ダブル役満', '点数2倍:'+YN(r.doubleYakumanPointAri)+' / チップ2倍:'+YN(r.doubleYakumanChipAri)],
     ['重複役満', YN(r.stackYakumanAri)],
-    ['特殊ルール', 'チートイ4枚使い:'+YN(r.chiitoi4Ari)+' / 4チョロ:'+YN(r.yonchoroAri)+' / 白ぽっち:'+YN(r.shiroPocchiAri)],
+    ['特殊ルール', 'チートイ4枚使い:'+YN(r.chiitoi4Ari)+' / 4チョロ:'+YN(r.yonchoroAri)+' / 白ぽっち:'+YN(r.shiroPocchiAri)+' / 花牌:'+YN(r.hanaPaiAri)+' / やきとり:'+YN(r.yakitoriAri)],
   ];
   if(r.playerCount===3){
     rows.push(['北の扱い', {none:'効果なし',kyotsuyaku:'共通役',nukidora:'抜きドラ'}[r.kitaHandling]]);
