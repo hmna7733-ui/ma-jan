@@ -354,6 +354,7 @@ async function manualRefreshSync(){
       DB.history = remote.history || DB.history;
       DB.chipTx = remote.chipTx || DB.chipTx || [];
       DB.groups = remote.groups || DB.groups || [];
+      DB.settlements = remote.settlements || DB.settlements || [];
       DB.rules.forEach(ensureRuleDefaults);
       DB.members.forEach(ensureMemberDefaults);
       localStorage.setItem(LS_KEY, JSON.stringify(DB));
@@ -386,6 +387,7 @@ function handleAuthChange(user){
           DB.history = remote.history || DB.history;
           DB.chipTx = remote.chipTx || DB.chipTx || [];
           DB.groups = remote.groups || DB.groups || [];
+      DB.settlements = remote.settlements || DB.settlements || [];
           DB.rules.forEach(ensureRuleDefaults);
           DB.members.forEach(ensureMemberDefaults);
           localStorage.setItem(LS_KEY, JSON.stringify(DB));
@@ -410,7 +412,7 @@ function queueCloudPush(immediate=false){
   const doWrite = ()=>{
     _isUploading = true;
     userDocRef().set({
-      payload: JSON.stringify({rules:DB.rules, members:DB.members, history:DB.history, chipTx:DB.chipTx, groups:DB.groups}),
+      payload: JSON.stringify({rules:DB.rules, members:DB.members, history:DB.history, chipTx:DB.chipTx, groups:DB.groups, settlements:DB.settlements}),
       updatedAt: firebase.firestore.FieldValue.serverTimestamp()
     }).then(()=>{ setTimeout(()=>{_isUploading=false;}, 1500); })
     .catch(e=>{ console.error('sync error', e); _isUploading=false; setTimeout(()=>queueCloudPush(true), 3000); });
@@ -529,7 +531,7 @@ function ensureMemberDefaults(m){
   return m;
 }
 
-let DB = { rules:[], members:[], history:[], chipTx:[], groups:[] };
+let DB = { rules:[], members:[], history:[], chipTx:[], groups:[], settlements:[] };
 try{
   const saved = JSON.parse(localStorage.getItem(LS_KEY) || 'null');
   if(saved){
@@ -538,6 +540,7 @@ try{
     if(!DB.rules) DB.rules=[];
     if(!DB.members) DB.members=[];
     if(!DB.groups) DB.groups=[];
+    if(!DB.settlements) DB.settlements=[];
     DB.rules.forEach(ensureRuleDefaults);
     DB.members.forEach(ensureMemberDefaults);
   }
@@ -697,10 +700,12 @@ const Router = { go(tab){ UI.tab=tab; UI.showInputForm=false; UI.editingHistoryI
 /* ============ 描画: ホーム ============ */
 function renderHome(){
   const rule = getRule(UI.home.ruleId);
-  const todaySessions = DB.history.filter(h=>h.date===todayStr());
   let html='';
   html += `<div class="card">
-    <h3>🀄 本日の対局設定</h3>
+    <div class="row" style="justify-content:space-between;align-items:center">
+      <h3 style="margin-bottom:0">🀄 本日の対局設定</h3>
+      ${UI.home.ruleId?`<button class="btn sm secondary" onclick="Settings.viewRuleDetail('${UI.home.ruleId}')">ルールの確認</button>`:''}
+    </div>
     <div class="field-wrap">
       <label class="field">ルール</label>
       <select onchange="Home.setRule(this.value)">
@@ -711,6 +716,7 @@ function renderHome(){
     html += `<div class="empty-state"><div class="big">📋</div>ルールが未登録です<br><button class="btn secondary" style="margin-top:12px" onclick="Router.go('settings')">設定でルールを追加</button></div></div>`;
     document.getElementById('app').innerHTML=html; return;
   }
+  const todaySessions = DB.history.filter(h=>h.date===todayStr() && h.ruleId===rule.id && !h.settlementId);
   const visibleMembers = (rule.groupIds && rule.groupIds.length)
     ? DB.members.filter(m=>m.groupIds && m.groupIds.some(gid=>rule.groupIds.includes(gid)))
     : DB.members;
@@ -750,8 +756,8 @@ function renderHome(){
   html += `</div>`;
 
   if(rule.chipEnabled){
-    const totals = computeChipTotals(todayStr());
-    const todayTransfers = DB.chipTx.filter(t=>t.date===todayStr() && t.type==='transfer');
+    const totals = computeChipTotals(todayStr(), {onlyUnsettled:true});
+    const todayTransfers = DB.chipTx.filter(t=>t.date===todayStr() && t.type==='transfer' && !t.settlementId);
     html += `<div class="card"><h3>🎫 本日のチップ（1枚${rule.chipValue}円）</h3>`;
     if(UI.home.memberIds.length===0){
       html += `<div class="small-note">メンバーを選択すると表示されます</div>`;
@@ -759,12 +765,16 @@ function renderHome(){
       html += `<div class="small-note" style="margin-bottom:8px">最終差枚数（プラスは勝ち分、マイナスは負け分）を入力してください。</div>`;
       UI.home.memberIds.forEach(mid=>{
         const finalVal = ChipTracker.getFinalValue(mid, todayStr());
+        UI.chipSign = UI.chipSign || {};
+        if(UI.chipSign[mid]===undefined) UI.chipSign[mid] = finalVal<0 ? -1 : 1;
+        const isNeg = UI.chipSign[mid]<0;
         const total = totals[mid]||0;
         const yen = total*rule.chipValue;
-        html += `<div class="row" style="align-items:center;gap:10px;margin-bottom:8px">
+        html += `<div class="row" style="align-items:center;gap:8px;margin-bottom:8px">
           <div class="grow" style="display:flex;align-items:center;gap:6px">${avatarHtml(mid,24)} ${esc(memberName(mid))}</div>
-          <input type="text" inputmode="numeric" pattern="-?[0-9]*" value="${finalVal}" style="width:80px;text-align:right" onchange="ChipTracker.setFinalValue('${mid}', this.value)">
-          <span class="small-note" style="width:30px">枚</span>
+          <button class="hako-btn ${isNeg?'active':''}" onclick="ChipTracker.toggleFinalSign('${mid}')">－</button>
+          <input type="text" inputmode="numeric" pattern="[0-9]*" value="${Math.abs(finalVal)}" style="width:70px;text-align:right" onchange="ChipTracker.setFinalAbs('${mid}', this.value)">
+          <span class="small-note" style="width:22px">枚</span>
           <span class="${yen>0?'pos':yen<0?'neg':''}" style="width:80px;text-align:right;font-weight:700">${sign(yen)}円</span>
         </div>`;
       });
@@ -784,6 +794,16 @@ function renderHome(){
     html += `</div>`;
   }
 
+  {
+    const chipTxToday = rule.chipEnabled ? DB.chipTx.filter(t=>t.date===todayStr() && !t.settlementId && (t.type==='final' ? UI.home.memberIds.includes(t.memberId) : (UI.home.memberIds.includes(t.fromId)||UI.home.memberIds.includes(t.toId)))) : [];
+    const hasSomethingToSettle = todaySessions.length>0 || chipTxToday.length>0;
+    html += `<div class="card" style="background:linear-gradient(180deg,#fdecea,#f7d3ce);border:1.5px solid #e2a39c">
+      <h3 style="color:#7a2015">🧾 本日の精算</h3>
+      <div class="small-note" style="margin-bottom:10px;color:#8a3a2e">ここまでの対局・チップをまとめて精算表として確定します。確定後は履歴タブでいつでも確認・編集できます。</div>
+      <button class="btn block" style="background:linear-gradient(180deg,#e2685c,#c0392b)" ${hasSomethingToSettle?'':'disabled'} onclick="Settlement.confirmToday()">📋 本日の精算を確定する</button>
+    </div>`;
+  }
+
   html += `<div class="card"><h3>🕹 本日の対局一覧（${todaySessions.length}半荘）</h3>`;
   if(todaySessions.length===0){ html += `<div class="small-note">まだありません</div>`; }
   else { [...todaySessions].reverse().forEach(s=>{ html += sessionCardHtml(s); }); }
@@ -791,7 +811,7 @@ function renderHome(){
   document.getElementById('app').innerHTML=html;
 }
 
-function sessionCardHtml(s){
+function sessionCardHtml(s, readOnly){
   const r = getRule(s.ruleId);
   const sortedP = [...s.players].sort((a,b)=>a.rank-b.rank);
   return `<div class="session-card">
@@ -800,11 +820,11 @@ function sessionCardHtml(s){
       ${sortedP.map(p=>`<span><span class="dot" style="width:7px;height:7px;border-radius:50%;background:${memberColor(p.memberId)};display:inline-block"></span>${p.rank}位 ${esc(memberName(p.memberId))} ${p.rawScore}点 <b class="${p.point>0?'pos':p.point<0?'neg':''}">${sign(p.point)}</b>${yenText(p.point,r)}</span>`).join('')}
       ${s.babaTotal?`<span>🏮 場代 <b class="pos">${sign(s.babaTotal)}</b>${yenText(s.babaTotal,r)}</span>`:''}
     </div>
-    <div class="actions">
+    ${readOnly?'':`<div class="actions">
       <button class="btn sm secondary" onclick="InputForm.openEdit('${s.id}')">編集</button>
       <button class="btn sm secondary" onclick="ScoreShare.shareSession('${s.id}')">🔗 送る</button>
       <button class="btn sm danger" onclick="History.remove('${s.id}')">削除</button>
-    </div>
+    </div>`}
   </div>`;
 }
 
@@ -1026,9 +1046,10 @@ function renderModal(scoreOnly){
 }
 
 /* ============ チップ（祝儀）管理 ============ */
-function computeChipTotals(date){
+function computeChipTotals(date, opts){
+  opts = opts || {};
   const totals={};
-  DB.chipTx.filter(t=>t.date===date).forEach(t=>{
+  DB.chipTx.filter(t=>t.date===date && (!opts.onlyUnsettled || !t.settlementId)).forEach(t=>{
     if(t.type==='transfer'){
       // 貸す側はプラス収支、借りる側はマイナス収支（貸した分は後で返してもらう＝貸した人の取り分）
       totals[t.fromId]=(totals[t.fromId]||0)+t.amount;
@@ -1044,6 +1065,18 @@ const ChipTracker = {
   getFinalValue(mid, date){
     const t = DB.chipTx.find(x=>x.date===date && x.type==='final' && x.memberId===mid);
     return t ? t.amount : 0;
+  },
+  toggleFinalSign(mid){
+    UI.chipSign = UI.chipSign || {};
+    UI.chipSign[mid] = ((UI.chipSign[mid]||1) * -1);
+    const absVal = Math.abs(ChipTracker.getFinalValue(mid, todayStr()));
+    ChipTracker.setFinalValue(mid, UI.chipSign[mid]*absVal);
+  },
+  setFinalAbs(mid, val){
+    UI.chipSign = UI.chipSign || {};
+    const s = UI.chipSign[mid] || 1;
+    const absVal = Math.abs(numOrZero(val));
+    ChipTracker.setFinalValue(mid, s*absVal);
   },
   setFinalValue(mid, val){
     const amt = numOrZero(val);
@@ -1103,21 +1136,135 @@ function renderChipModal(){
 }
 
 /* ============ 描画: 履歴 ============ */
+function settlementCardHtml(st){
+  const rule = getRule(st.ruleId);
+  const memberList = st.memberIds.map(mid=>esc(memberName(mid))).join('、');
+  const rows = st.memberIds.map(mid=>{
+    const pm = st.perMember[mid] || {scorePoint:0, chipYen:0};
+    const scoreYen = (rule && rule.rateEnabled) ? Math.round(pm.scorePoint*rule.rate) : null;
+    const totalYen = (scoreYen!==null) ? scoreYen + (pm.chipYen||0) : (pm.chipYen||0);
+    return `<tr>
+      <td>${avatarHtml(mid,22)} ${esc(memberName(mid))}</td>
+      <td class="${pm.scorePoint>0?'pos':pm.scorePoint<0?'neg':''}">${sign(Math.round(pm.scorePoint*10)/10)}</td>
+      <td class="${pm.chipYen>0?'pos':pm.chipYen<0?'neg':''}">${sign(pm.chipYen||0)}円</td>
+      <td class="${totalYen>0?'pos':totalYen<0?'neg':''}" style="font-weight:800">${sign(totalYen)}円</td>
+    </tr>`;
+  }).join('');
+  const expanded = UI.expandedSettlementId===st.id;
+  const sessions = DB.history.filter(h=>st.sessionIds.includes(h.id));
+  return `<div class="session-card" style="border-left:4px solid var(--accent)">
+    <div class="meta">
+      <div class="d">${fmtDate(st.date)} ・ ${esc(rule?rule.name:'(ルール削除済)')} ・ ${memberList}</div>
+    </div>
+    <table class="score-board"><thead><tr><th>名前</th><th>スコア</th><th>チップ</th><th>合計</th></tr></thead><tbody>${rows}</tbody></table>
+    <div class="actions">
+      <button class="btn sm secondary" onclick="Settlement.toggleExpand('${st.id}')">${expanded?'対局履歴を閉じる':'対局履歴を見る（'+sessions.length+'件）'}</button>
+      <button class="btn sm secondary" onclick="Settlement.unlock('${st.id}')">編集</button>
+      <button class="btn sm danger" onclick="Settlement.remove('${st.id}')">削除</button>
+    </div>
+    ${expanded?`<div style="margin-top:10px">${sessions.map(s=>sessionCardHtml(s,true)).join('')}</div>`:''}
+  </div>`;
+}
+
 function renderHistory(){
-  let html=`<div class="card"><h3>📜 対局履歴（全${DB.history.length}件）</h3>`;
-  if(DB.history.length===0){ html+=`<div class="empty-state"><div class="big">📭</div>まだ履歴がありません</div>`; }
-  else{
+  let html=`<div class="card"><h3>🧾 精算表</h3>`;
+  if(DB.settlements.length===0){
+    html+=`<div class="small-note">まだ精算されたものはありません。ホーム画面の「本日の精算を確定する」から作成できます。</div>`;
+  } else {
     const byDate={};
-    DB.history.forEach(s=>{ (byDate[s.date]=byDate[s.date]||[]).push(s); });
+    DB.settlements.forEach(st=>{ (byDate[st.date]=byDate[st.date]||[]).push(st); });
     const dates=Object.keys(byDate).sort().reverse();
     dates.forEach(d=>{
       html+=`<div class="section-title">${fmtDate(d)}</div>`;
-      [...byDate[d]].reverse().forEach(s=>html+=sessionCardHtml(s));
+      [...byDate[d]].reverse().forEach(st=>html+=settlementCardHtml(st));
+    });
+  }
+  html+=`</div>`;
+
+  const unsettled = DB.history.filter(h=>!h.settlementId);
+  html+=`<div class="card"><h3>📜 未精算の対局（${unsettled.length}件）</h3>`;
+  if(unsettled.length===0){
+    html+=`<div class="small-note">未精算の対局はありません。</div>`;
+  } else {
+    const byDate2={};
+    unsettled.forEach(s=>{ (byDate2[s.date]=byDate2[s.date]||[]).push(s); });
+    const dates2=Object.keys(byDate2).sort().reverse();
+    dates2.forEach(d=>{
+      html+=`<div class="section-title">${fmtDate(d)}</div>`;
+      [...byDate2[d]].reverse().forEach(s=>html+=sessionCardHtml(s));
     });
   }
   html+=`</div>`;
   document.getElementById('app').innerHTML=html;
 }
+
+const Settlement = {
+  toggleExpand(id){
+    UI.expandedSettlementId = (UI.expandedSettlementId===id) ? null : id;
+    render();
+  },
+  confirmToday(){
+    const rule = getRule(UI.home.ruleId);
+    if(!rule) return;
+    const sessions = DB.history.filter(h=>h.date===todayStr() && h.ruleId===rule.id && !h.settlementId);
+    const chipTxToday = rule.chipEnabled ? DB.chipTx.filter(t=>t.date===todayStr() && !t.settlementId && (t.type==='final' ? UI.home.memberIds.includes(t.memberId) : (UI.home.memberIds.includes(t.fromId)||UI.home.memberIds.includes(t.toId)))) : [];
+    if(sessions.length===0 && chipTxToday.length===0){
+      renderInfoModal('精算する内容がありません','対局結果またはチップを記録してから確定してください。');
+      return;
+    }
+    showConfirmModal('本日の精算を確定しますか？', 'このルール・メンバーの対局とチップを1つの精算表にまとめます。確定後は履歴タブでいつでも編集・削除できます。', ()=>{
+      const id = uid();
+      const perMember = {};
+      UI.home.memberIds.forEach(mid=>{ perMember[mid] = { scorePoint:0, chipYen:0 }; });
+      sessions.forEach(s=>s.players.forEach(p=>{ if(perMember[p.memberId]) perMember[p.memberId].scorePoint += p.point; }));
+      chipTxToday.forEach(t=>{
+        if(t.type==='transfer'){
+          if(perMember[t.fromId]) perMember[t.fromId].chipYen += t.amount*rule.chipValue;
+          if(perMember[t.toId]) perMember[t.toId].chipYen -= t.amount*rule.chipValue;
+        } else if(t.type==='final'){
+          if(perMember[t.memberId]) perMember[t.memberId].chipYen += t.amount*rule.chipValue;
+        }
+      });
+      const settlement = {
+        id, date:todayStr(), ruleId:rule.id, memberIds:[...UI.home.memberIds],
+        sessionIds:sessions.map(s=>s.id), chipTxIds:chipTxToday.map(t=>t.id),
+        perMember, confirmedAt:Date.now()
+      };
+      DB.settlements.push(settlement);
+      sessions.forEach(s=>{ s.settlementId=id; });
+      chipTxToday.forEach(t=>{ t.settlementId=id; });
+      persist('settlements'); persist('history'); persist('chipTx');
+      render();
+      renderInfoModal('精算を確定しました','履歴タブでいつでも確認・編集できます。');
+    }, '確定する');
+  },
+  unlock(id){
+    showConfirmModal('編集のため精算を解除しますか？', 'この精算表を一旦解除し、対局・チップを編集できる状態に戻します。編集後はホーム画面から再度精算を確定してください。', ()=>{
+      const st = DB.settlements.find(x=>x.id===id);
+      if(!st) return;
+      DB.history.forEach(h=>{ if(h.settlementId===id) h.settlementId=null; });
+      DB.chipTx.forEach(t=>{ if(t.settlementId===id) t.settlementId=null; });
+      DB.settlements = DB.settlements.filter(x=>x.id!==id);
+      persist('settlements'); persist('history'); persist('chipTx');
+      UI.home.ruleId = st.ruleId;
+      UI.home.memberIds = [...st.memberIds];
+      localStorage.setItem('mj_last_members', JSON.stringify(UI.home.memberIds));
+      Router.go('home');
+    }, '解除する');
+  },
+  remove(id){
+    showConfirmModal('精算表を削除しますか？', 'この精算表と、含まれる対局・チップの記録もすべて削除されます。この操作は元に戻せません。', ()=>{
+      const st = DB.settlements.find(x=>x.id===id);
+      if(!st) return;
+      DB.history = DB.history.filter(h=>h.settlementId!==id);
+      DB.chipTx = DB.chipTx.filter(t=>t.settlementId!==id);
+      DB.settlements = DB.settlements.filter(x=>x.id!==id);
+      persist('settlements'); persist('history'); persist('chipTx');
+      render();
+    }, '削除する');
+  }
+};
+
 const History = {
   remove(id){
     showConfirmModal('削除しますか？', 'この対局結果を削除しますか？この操作は元に戻せません。', ()=>{
