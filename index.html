@@ -206,14 +206,17 @@ input:focus,select:focus,textarea:focus{outline:none;border-color:var(--accent);
 .diff-ok{color:#1a7a45;font-weight:700;}
 .diff-bad{color:var(--danger);font-weight:700;}
 .uma-input-row{display:flex;gap:8px;align-items:center;margin-bottom:7px;}
-.drum-row{display:flex;gap:8px;align-items:center;justify-content:center;margin:8px 0;}
-.drum-digit{width:46px;display:flex;flex-direction:column;align-items:center;gap:4px;}
-.drum-digit .dbtn{width:46px;height:32px;border:none;background:#f1efe9;border-radius:9px;font-size:15px;font-weight:800;color:var(--accent-dark);cursor:pointer;}
-.drum-digit .dbtn:active{background:var(--accent-light);}
-.drum-digit .dval{width:46px;height:44px;display:flex;align-items:center;justify-content:center;font-size:22px;font-weight:800;color:var(--text);background:#fbfbf9;border:1.5px solid var(--border);border-radius:10px;}
-.sign-toggle{width:52px;height:52px;border-radius:12px;border:none;font-size:20px;font-weight:800;cursor:pointer;}
-.sign-toggle.neg{background:linear-gradient(180deg,#f4c9c2,#e7a79d);color:#7a2015;}
-.sign-toggle.pos{background:var(--accent-light);color:var(--accent-dark);}
+.suffix-box{min-width:52px;text-align:center;font-size:19px;font-weight:800;color:var(--sub);background:#f1efe9;border-radius:10px;padding:11px 8px;letter-spacing:1px;}
+.hako-btn{padding:0 14px;height:44px;border-radius:10px;border:1.5px solid var(--border);background:#fff;color:var(--sub);font-weight:700;font-size:13px;cursor:pointer;white-space:nowrap;}
+.hako-btn.active{background:linear-gradient(180deg,#f4c9c2,#e7a79d);color:#7a2015;border-color:transparent;}
+.drum-wheel{
+  width:44px;height:108px;overflow-y:scroll;scroll-snap-type:y mandatory;
+  border:1.5px solid var(--border);border-radius:10px;background:#fbfbf9;
+  -webkit-overflow-scrolling:touch;scrollbar-width:none;
+}
+.drum-wheel::-webkit-scrollbar{display:none;}
+.drum-wheel-item{height:36px;display:flex;align-items:center;justify-content:center;font-size:19px;font-weight:800;color:var(--text);scroll-snap-align:center;}
+.drum-wheel-pad{height:36px;scroll-snap-align:center;}
 .mode-switch{display:flex;gap:8px;margin-bottom:14px;background:#f1efe9;padding:4px;border-radius:12px;}
 .mode-switch .ms-opt{flex:1;text-align:center;padding:8px;border-radius:9px;font-size:12.5px;font-weight:700;color:var(--sub);cursor:pointer;}
 .mode-switch .ms-opt.active{background:linear-gradient(180deg,var(--accent),var(--accent2));color:#fff;}
@@ -270,6 +273,8 @@ input:focus,select:focus,textarea:focus{outline:none;border-color:var(--accent);
     <div class="date" id="headerDate"></div>
   </div>
   <div class="row" style="align-items:center;gap:10px">
+    <button class="btn sm secondary" id="refreshSyncBtn" onclick="manualRefreshSync()" title="最新のデータを取得">⟳</button>
+    <span id="accountName" style="color:rgba(255,255,255,.8);font-size:11.5px;font-weight:700"></span>
     <span class="sync-dot" id="syncDot" title="同期状態"></span>
     <button class="btn sm secondary" onclick="Router.go('settings')">⚙</button>
   </div>
@@ -332,6 +337,38 @@ function setSyncDot(on){
   if(el) el.classList.toggle('on', !!on);
 }
 
+function updateAccountNameDisplay(){
+  const el = document.getElementById('accountName');
+  if(!el) return;
+  el.textContent = (currentUser && currentUser.email) ? currentUser.email.split('@')[0] : '';
+}
+
+async function manualRefreshSync(){
+  if(!fbAuth || !currentUser){ renderInfoModal('ログインが必要です','クラウド同期にはログインが必要です。'); return; }
+  const btn = document.getElementById('refreshSyncBtn');
+  if(btn){ btn.disabled = true; btn.textContent = '…'; }
+  try{
+    const doc = await userDocRef().get({source:'server'});
+    if(doc.exists){
+      const remote = JSON.parse(doc.data().payload || '{}');
+      DB.rules = remote.rules || DB.rules;
+      DB.members = remote.members || DB.members;
+      DB.history = remote.history || DB.history;
+      DB.chipTx = remote.chipTx || DB.chipTx || [];
+      DB.groups = remote.groups || DB.groups || [];
+      DB.rules.forEach(ensureRuleDefaults);
+      DB.members.forEach(ensureMemberDefaults);
+      localStorage.setItem(LS_KEY, JSON.stringify(DB));
+      render();
+    }
+  }catch(e){
+    console.error(e);
+    renderInfoModal('更新に失敗しました', firestoreErrorMessage(e));
+  }finally{
+    if(btn){ btn.disabled = false; btn.textContent = '⟳'; }
+  }
+}
+
 function handleAuthChange(user){
   if(_unsubscribeSnapshot){ _unsubscribeSnapshot(); _unsubscribeSnapshot=null; }
   if(user){
@@ -339,6 +376,7 @@ function handleAuthChange(user){
     localStorage.removeItem(SKIP_KEY);
     showApp();
     setSyncDot(true);
+    updateAccountNameDisplay();
     _unsubscribeSnapshot = userDocRef().onSnapshot(doc=>{
       if(_isUploading) return;
       if(doc.exists){
@@ -361,6 +399,7 @@ function handleAuthChange(user){
   } else {
     currentUser = null;
     setSyncDot(false);
+    updateAccountNameDisplay();
     if(localStorage.getItem(SKIP_KEY)==='1'){ showApp(); }
     else{ showGate(); }
   }
@@ -760,23 +799,22 @@ const Home = {
 };
 
 /* ============ 対局入力フォーム ============ */
-const DRUM_DIGITS = 4;
 const SCORE_MODE_KEY = 'mj_score_input_mode';
+const DRUM_ITEM_H = 36;
 
 const InputForm = {
+  _scrollTimers: {},
   open(){
     UI.editingHistoryId=null;
     const rule=getRule(UI.home.ruleId);
-    const suffixLen = (rule.stick500Enabled || rule.stick100Enabled) ? 2 : 3;
-    const suffix = '0'.repeat(suffixLen);
-    UI.formEntries={};
-    UI.formDrum={};
+    UI.formSign={}; UI.formLeading={}; UI.formEntries={};
     UI.home.memberIds.forEach(id=>{
-      UI.formEntries[id]=suffix;
-      UI.formDrum[id]={ sign:1, digits:Array(DRUM_DIGITS).fill('0') };
+      UI.formSign[id]=1;
+      UI.formLeading[id]='';
     });
     UI.formRuleId=rule.id;
     UI.formMemberIds=[...UI.home.memberIds];
+    UI.formMemberIds.forEach(mid=>InputForm.composeEntry(mid));
     UI.scoreInputMode = localStorage.getItem(SCORE_MODE_KEY) || 'direct';
     UI.showInputForm=true;
     renderModal();
@@ -787,13 +825,16 @@ const InputForm = {
     UI.editingHistoryId=sessionId;
     UI.formRuleId=s.ruleId;
     UI.formMemberIds=s.players.map(p=>p.memberId);
-    UI.formEntries={};
-    UI.formDrum={};
-    const rule=getRule(s.ruleId);
-    const suffixLen = rule ? ((rule.stick500Enabled || rule.stick100Enabled) ? 2 : 3) : 2;
+    const suffixLen = InputForm.currentSuffixLen();
+    UI.formSign={}; UI.formLeading={}; UI.formEntries={};
     s.players.forEach(p=>{
-      UI.formEntries[p.memberId]=String(p.rawScore);
-      InputForm.syncDrumFromEntry(p.memberId, suffixLen);
+      const neg = p.rawScore<0;
+      const abs = Math.abs(p.rawScore);
+      const str = String(abs);
+      const leading = str.length>suffixLen ? str.slice(0, str.length-suffixLen) : '0';
+      UI.formSign[p.memberId] = neg?-1:1;
+      UI.formLeading[p.memberId] = leading;
+      InputForm.composeEntry(p.memberId);
     });
     UI.scoreInputMode = localStorage.getItem(SCORE_MODE_KEY) || 'direct';
     UI.showInputForm=true;
@@ -803,61 +844,67 @@ const InputForm = {
     const rule=getRule(UI.formRuleId);
     return (rule && (rule.stick500Enabled || rule.stick100Enabled)) ? 2 : 3;
   },
-  setMode(mode){
+  leadingDigitsCount(){ return 6 - InputForm.currentSuffixLen(); },
+  composeEntry(mid){
     const suffixLen = InputForm.currentSuffixLen();
-    if(mode==='drum'){
-      UI.formMemberIds.forEach(mid=>InputForm.syncDrumFromEntry(mid, suffixLen));
-    }
+    const suffix = '0'.repeat(suffixLen);
+    let leading = (UI.formLeading[mid]||'0').replace(/^0+(?=\d)/,'');
+    if(leading==='') leading='0';
+    UI.formEntries[mid] = (UI.formSign[mid]<0?'-':'') + leading + suffix;
+  },
+  getDrumDigits(mid){
+    const n = InputForm.leadingDigitsCount();
+    const padded = (UI.formLeading[mid]||'0').padStart(n,'0').slice(-n);
+    return padded.split('');
+  },
+  setMode(mode){
     UI.scoreInputMode = mode;
     localStorage.setItem(SCORE_MODE_KEY, mode);
     renderModal();
   },
-  syncDrumFromEntry(mid, suffixLen){
-    let val = UI.formEntries[mid] || '';
-    const neg = val.startsWith('-');
-    const digitsOnly = val.replace('-','').replace(/[^0-9]/g,'');
-    let leading = digitsOnly.length > suffixLen ? digitsOnly.slice(0, digitsOnly.length-suffixLen) : '';
-    leading = leading.padStart(DRUM_DIGITS,'0').slice(-DRUM_DIGITS);
-    UI.formDrum[mid] = { sign: neg?-1:1, digits: leading.split('') };
-  },
-  syncEntryFromDrum(mid){
-    const suffixLen = InputForm.currentSuffixLen();
-    const suffix = '0'.repeat(suffixLen);
-    const d = UI.formDrum[mid];
-    let leadingStr = d.digits.join('').replace(/^0+(?=\d)/,'');
-    if(leadingStr==='') leadingStr='0';
-    UI.formEntries[mid] = (d.sign<0?'-':'') + leadingStr + suffix;
-  },
-  updateScore(mid,val){
-    let cleaned = val.replace(/[^0-9-]/g,'');
-    const neg = cleaned.startsWith('-');
-    cleaned = cleaned.replace(/-/g,'');
-    cleaned = (neg?'-':'') + cleaned;
-    UI.formEntries[mid]=cleaned;
-    const el = document.getElementById('score-input-'+mid);
-    if(el && el.value !== cleaned) el.value = cleaned;
+  updateLeading(mid,val){
+    UI.formLeading[mid] = val.replace(/[^0-9]/g,'');
+    InputForm.composeEntry(mid);
+    InputForm.updatePreview(mid);
     updateScoreDiffDisplay();
   },
   toggleSign(mid){
-    if(UI.scoreInputMode==='drum'){
-      UI.formDrum[mid].sign *= -1;
-      InputForm.syncEntryFromDrum(mid);
-      renderModal();
-    } else {
-      let val = UI.formEntries[mid] || '';
-      val = val.startsWith('-') ? val.slice(1) : ('-'+val);
-      UI.formEntries[mid] = val;
-      const el = document.getElementById('score-input-'+mid);
-      if(el) el.value = val;
-      updateScoreDiffDisplay();
-    }
+    UI.formSign[mid] = (UI.formSign[mid]||1) * -1;
+    InputForm.composeEntry(mid);
+    const btn = document.getElementById('hakoshita-'+mid);
+    if(btn) btn.classList.toggle('active', UI.formSign[mid]<0);
+    InputForm.updatePreview(mid);
+    updateScoreDiffDisplay();
   },
-  drumChange(mid, idx, delta){
-    const d = UI.formDrum[mid];
-    let v = (parseInt(d.digits[idx],10) + delta + 10) % 10;
-    d.digits[idx] = String(v);
-    InputForm.syncEntryFromDrum(mid);
-    renderModal();
+  updatePreview(mid){
+    const el = document.getElementById('score-preview-'+mid);
+    if(el) el.textContent = UI.formEntries[mid]+' 点';
+  },
+  onDrumScroll(mid, idx){
+    const key = mid+'_'+idx;
+    clearTimeout(InputForm._scrollTimers[key]);
+    InputForm._scrollTimers[key] = setTimeout(()=>{
+      const el = document.getElementById('drum-'+mid+'-'+idx);
+      if(!el) return;
+      let digit = Math.round(el.scrollTop/DRUM_ITEM_H);
+      digit = Math.max(0, Math.min(9, digit));
+      el.scrollTop = digit*DRUM_ITEM_H;
+      const digits = InputForm.getDrumDigits(mid);
+      digits[idx] = String(digit);
+      UI.formLeading[mid] = digits.join('').replace(/^0+(?=\d)/,'') || '0';
+      InputForm.composeEntry(mid);
+      InputForm.updatePreview(mid);
+      updateScoreDiffDisplay();
+    }, 130);
+  },
+  initDrumScrollPositions(){
+    UI.formMemberIds.forEach(mid=>{
+      const digits = InputForm.getDrumDigits(mid);
+      digits.forEach((d,idx)=>{
+        const el = document.getElementById('drum-'+mid+'-'+idx);
+        if(el) el.scrollTop = parseInt(d,10)*DRUM_ITEM_H;
+      });
+    });
   },
   close(){ UI.showInputForm=false; UI.editingHistoryId=null; renderModal(); },
   requestClose(){
@@ -867,7 +914,6 @@ const InputForm = {
     if(UI._saving) return;
     const rule=getRule(UI.formRuleId);
     const entries=UI.formMemberIds.map(mid=>({memberId:mid, rawScore:numOrZero(UI.formEntries[mid])}));
-    if(entries.some(e=>UI.formEntries[e.memberId]==='' || UI.formEntries[e.memberId]==='-')){ renderInfoModal('入力が足りません','全員分の最終持ち点を入力してください。'); return; }
     UI._saving = true;
     const computed=computeSession(rule, entries);
     const players=computed.map(c=>({memberId:c.memberId, rawScore:c.rawScore, rank:c.rank, point:c.point}));
@@ -902,33 +948,39 @@ function updateScoreDiffDisplay(){
 function renderModal(scoreOnly){
   if(!UI.showInputForm){ document.getElementById('modalRoot').innerHTML=''; return; }
   const rule=getRule(UI.formRuleId);
+  const suffixLen = InputForm.currentSuffixLen();
+  const suffix = '0'.repeat(suffixLen);
   const expectedTotal=rule.startPoints*UI.formMemberIds.length;
   const currentTotal=UI.formMemberIds.reduce((a,mid)=>a+numOrZero(UI.formEntries[mid]),0);
   const diff=currentTotal-expectedTotal;
   const mode = UI.scoreInputMode || 'direct';
   const rowsHtml = UI.formMemberIds.map(mid=>{
+    const hakoBtn = `<button class="hako-btn ${UI.formSign[mid]<0?'active':''}" id="hakoshita-${mid}" onclick="InputForm.toggleSign('${mid}')">箱下</button>`;
+    const suffixBox = `<div class="suffix-box">${suffix}</div>`;
+    let mainHtml;
     if(mode==='drum'){
-      const d = UI.formDrum[mid];
-      return `<div class="field-wrap">
-        <label class="field">${avatarHtml(mid,20)} ${esc(memberName(mid))} の最終持ち点</label>
-        <div class="drum-row">
-          <button class="sign-toggle ${d.sign<0?'neg':'pos'}" onclick="InputForm.toggleSign('${mid}')">${d.sign<0?'－':'＋'}</button>
-          ${d.digits.map((dig,idx)=>`
-            <div class="drum-digit">
-              <button class="dbtn" onclick="InputForm.drumChange('${mid}',${idx},1)">▲</button>
-              <div class="dval">${dig}</div>
-              <button class="dbtn" onclick="InputForm.drumChange('${mid}',${idx},-1)">▼</button>
-            </div>`).join('')}
-        </div>
-        <div class="small-note" style="text-align:center">${UI.formEntries[mid]} 点</div>
+      const digits = InputForm.getDrumDigits(mid);
+      mainHtml = `<div class="row" style="gap:8px;align-items:center;justify-content:center">
+        ${digits.map((dig,idx)=>`
+          <div class="drum-wheel" id="drum-${mid}-${idx}" onscroll="InputForm.onDrumScroll('${mid}',${idx})">
+            <div class="drum-wheel-pad"></div>
+            ${[0,1,2,3,4,5,6,7,8,9].map(n=>`<div class="drum-wheel-item">${n}</div>`).join('')}
+            <div class="drum-wheel-pad"></div>
+          </div>`).join('')}
+        ${suffixBox}
+        ${hakoBtn}
+      </div>`;
+    } else {
+      mainHtml = `<div class="row" style="gap:8px;align-items:center">
+        <input type="text" id="leading-input-${mid}" inputmode="numeric" pattern="[0-9]*" value="${esc(UI.formLeading[mid])}" oninput="InputForm.updateLeading('${mid}', this.value)" style="flex:1;text-align:right;font-size:18px;font-weight:700">
+        ${suffixBox}
+        ${hakoBtn}
       </div>`;
     }
     return `<div class="field-wrap">
       <label class="field">${avatarHtml(mid,20)} ${esc(memberName(mid))} の最終持ち点</label>
-      <div class="row" style="gap:8px">
-        <button class="sign-toggle ${(UI.formEntries[mid]||'').startsWith('-')?'neg':'pos'}" onclick="InputForm.toggleSign('${mid}')">${(UI.formEntries[mid]||'').startsWith('-')?'－':'＋'}</button>
-        <input type="text" id="score-input-${mid}" inputmode="numeric" pattern="-?[0-9]*" value="${UI.formEntries[mid]}" onfocus="this.setSelectionRange(0,0)" oninput="InputForm.updateScore('${mid}', this.value)" style="flex:1">
-      </div>
+      ${mainHtml}
+      <div class="small-note" id="score-preview-${mid}" style="text-align:center;margin-top:6px">${UI.formEntries[mid]} 点</div>
     </div>`;
   }).join('');
   const html=`
@@ -948,6 +1000,9 @@ function renderModal(scoreOnly){
     </div>
   </div>`;
   document.getElementById('modalRoot').innerHTML=html;
+  if(mode==='drum'){
+    requestAnimationFrame(()=>InputForm.initDrumScrollPositions());
+  }
 }
 
 /* ============ チップ（祝儀）管理 ============ */
