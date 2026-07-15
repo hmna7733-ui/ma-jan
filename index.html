@@ -1534,15 +1534,18 @@ const Settlement = {
     const rule = getRule(st.ruleId);
     const sessions = DB.history.filter(h=>st.sessionIds.includes(h.id));
     const perMemberByName = {};
+    const memberColorByName = {};
     st.memberIds.forEach(mid=>{
       const pm = st.perMember[mid] || {scorePoint:0, chipCount:0};
       perMemberByName[memberName(mid)] = { scorePoint: pm.scorePoint||0, chipCount: pm.chipCount||0 };
+      memberColorByName[memberName(mid)] = memberColor(mid);
     });
     const payload = {
       date: st.date,
       ruleName: rule?rule.name:'不明なルール',
       rule: rule || null,
       memberNames: st.memberIds.map(mid=>memberName(mid)),
+      memberColorByName,
       perMemberByName,
       sessions: sessions.map(s=>({
         date: s.date,
@@ -1609,7 +1612,7 @@ const Settlement = {
         document.getElementById('modalRoot').innerHTML='';
         render();
         renderInfoModal('受け取りました','精算表と対局履歴を受け取りました。データタブの成績にも反映されます。');
-      });
+      }, payload.memberColorByName || {});
     }catch(e){ console.error(e); renderInfoModal('受け取りに失敗しました', firestoreErrorMessage(e, 'mahjong_shared_settlements')); }
   }
 };
@@ -2361,7 +2364,8 @@ function updateAxisDisplay(){
 }
 
 /* 受信データの名前解決：正式名/別名と一致するメンバーを探し、複数候補があれば確認モーダルで選ばせる */
-function resolveMemberNames(names, onResolved){
+function resolveMemberNames(names, onResolved, colorsByName){
+  colorsByName = colorsByName || {};
   const uniqueNames = Array.from(new Set(names));
   const nameToId = {};
   const ambiguous = [];
@@ -2370,7 +2374,8 @@ function resolveMemberNames(names, onResolved){
     if(matches.length===1){
       nameToId[name] = matches[0].id;
     } else if(matches.length===0){
-      const m = { id:uid(), name, color:PALETTE[DB.members.length % PALETTE.length], isSelf:false, ruleIds:[], aliases:[] };
+      const senderColor = colorsByName[name];
+      const m = { id:uid(), name, color: senderColor || PALETTE[DB.members.length % PALETTE.length], isSelf:false, ruleIds:[], aliases:[] };
       DB.members.push(m);
       nameToId[name] = m.id;
     } else {
@@ -2467,7 +2472,7 @@ function renderMemberModal(){
             (d.aliases||[]).map(a=>`<div class="chip selected" style="gap:8px">${esc(a)}<span style="cursor:pointer;font-weight:800" onclick="Settings.removeMemberAlias('${esc(a).replace(/'/g,"&#39;")}')">✕</span></div>`).join('')}
         </div>
         <div class="row" style="margin-top:8px;gap:8px">
-          <input type="text" id="newAliasName" placeholder="例：隼人、はやさん" style="flex:1">
+          <input type="text" id="newAliasName" placeholder="例：あかぎ、赤木、しげちゃん" style="flex:1">
           <button class="btn sm secondary" onclick="Settings.addMemberAlias()">追加</button>
         </div>
         <div class="hint">ここに登録した名前と一致するデータを他の人から受け取った場合、自動でこのメンバーに統合されます。</div>
@@ -2965,7 +2970,7 @@ const ScoreShare = {
       date: s.date,
       ruleName: rule?rule.name:'不明なルール',
       rule: rule||null,
-      players: s.players.map(p=>({name:memberName(p.memberId), rawScore:p.rawScore, rank:p.rank, point:p.point}))
+      players: s.players.map(p=>({name:memberName(p.memberId), rawScore:p.rawScore, rank:p.rank, point:p.point, color:memberColor(p.memberId)}))
     };
     const code = Math.random().toString(36).slice(2,8).toUpperCase();
     try{
@@ -2997,6 +3002,8 @@ const ScoreShare = {
       }
       if(!rule) rule = DB.rules[0];
       const names = (payload.players||[]).map(p=>p.name);
+      const colorsByName = {};
+      (payload.players||[]).forEach(p=>{ if(p.color) colorsByName[p.name]=p.color; });
       resolveMemberNames(names, (nameToId)=>{
         const players = (payload.players||[]).map(p=>({memberId:nameToId[p.name], rawScore:p.rawScore, rank:p.rank, point:p.point}));
         DB.history.push({id:uid(), date:payload.date, ruleId:rule.id, players});
@@ -3004,7 +3011,7 @@ const ScoreShare = {
         UI.receiveScoreCode=null;
         renderInfoModal('受け取りました','スコアを受け取りました。');
         render();
-      });
+      }, colorsByName);
     }catch(e){ console.error(e); renderInfoModal('受け取りに失敗しました', firestoreErrorMessage(e, 'mahjong_shared_scores')); }
   }
 };
