@@ -2022,20 +2022,29 @@ function renderAnalysis(){
       if(oppEntries.length){
         html+=`<div class="card"><h3>対戦相手別 成績</h3></div>`;
         oppEntries.sort((a,b)=>b[1].scoreDiff-a[1].scoreDiff).forEach(([oid,o])=>{
-          html+=`<div class="card" style="cursor:pointer;padding:14px 16px" onclick="Analysis.setOpponent('${oid}')">
-            <div class="row" style="justify-content:space-between;align-items:center">
+          const expanded = UI.expandedOpponentId===oid;
+          html+=`<div class="card" style="padding:14px 16px">
+            <div class="row" style="justify-content:space-between;align-items:center;cursor:pointer" onclick="Analysis.toggleOpponentExpand('${oid}')">
               <div class="nm">${avatarHtml(oid,26)} ${esc(memberName(oid))}</div>
-              <div class="${o.scoreDiff>0?'pos':o.scoreDiff<0?'neg':''}" style="font-size:19px;font-weight:800">${sign(Math.round(o.scoreDiff*10)/10)}</div>
+              <div class="row" style="align-items:center;gap:8px">
+                <div class="${o.scoreDiff>0?'pos':o.scoreDiff<0?'neg':''}" style="font-size:19px;font-weight:800">${sign(Math.round(o.scoreDiff*10)/10)}</div>
+                <span style="font-size:16px;color:var(--sub)">${expanded?'▾':'▸'}</span>
+              </div>
             </div>
-            <div class="row wrap" style="gap:8px;margin-top:8px">
-              <span class="chip" style="padding:5px 10px;font-size:11.5px;font-weight:600;background:var(--accent-light);cursor:default">対局${o.games}</span>
-              <span class="chip" style="padding:5px 10px;font-size:11.5px;font-weight:600;background:var(--accent-light);cursor:default">${o.win}勝${o.lose}敗${o.draw}分</span>
-              <span class="chip" style="padding:5px 10px;font-size:11.5px;font-weight:600;background:var(--accent-light);cursor:default">チップ差${sign(o.chipDiff)}枚</span>
-              <span class="chip" style="padding:5px 10px;font-size:11.5px;font-weight:600;background:var(--accent-light);cursor:default">金額差${sign(Math.round(o.moneyDiff))}P</span>
-              ${o.tobashiFromCount?`<span class="chip" style="padding:5px 10px;font-size:11.5px;font-weight:600;background:var(--accent-light);cursor:default">飛ばした${o.tobashiFromCount}回</span>`:''}
-              ${o.tobashiToCount?`<span class="chip" style="padding:5px 10px;font-size:11.5px;font-weight:600;background:var(--accent-light);cursor:default">飛ばされた${o.tobashiToCount}回</span>`:''}
-            </div>
-            ${o.maxRank?pieChartHtml(o.rankCounts, o.games, o.maxRank, 76):''}
+            ${expanded?`
+              <div class="stat-grid" style="margin-top:12px">
+                <div class="stat-box"><div class="v">${o.games}</div><div class="l">対局数</div></div>
+                <div class="stat-box"><div class="v">${o.win}-${o.lose}-${o.draw}</div><div class="l">勝-負-分</div></div>
+                <div class="stat-box" style="background:linear-gradient(180deg,#fff3e6,#ffdfb8)"><div class="v" style="color:#b5651d">${sign(Math.round(o.scoreDiff*10)/10)}</div><div class="l">スコア差</div></div>
+                <div class="stat-box"><div class="v">${sign(o.chipDiff)}枚</div><div class="l">チップ差</div></div>
+                <div class="stat-box"><div class="v">${o.tobashiFromCount}</div><div class="l">飛ばした回数</div></div>
+                <div class="stat-box"><div class="v">${o.tobashiToCount}</div><div class="l">飛ばされた回数</div></div>
+                <div class="stat-box" style="grid-column:span 3;background:linear-gradient(180deg,#fff9df,#f8e8a8)"><div class="v" style="color:#8a6d1d">${sign(Math.round(o.moneyDiff))}P</div><div class="l">金額差</div></div>
+              </div>
+              <div class="section-title">この相手との着順の割合</div>
+              ${o.maxRank?pieChartHtml(o.rankCounts, o.games, o.maxRank, 96):''}
+              <button class="link-btn" onclick="Analysis.setOpponent('${oid}')">この相手との対局一覧を見る</button>
+            `:''}
           </div>`;
         });
       }
@@ -2045,17 +2054,27 @@ function renderAnalysis(){
         games=games.filter(g=>g.players.some(p=>p.memberId===UI.analysisOpponentId));
         filterNote=`<button class="link-btn" onclick="Analysis.clearOpponent()">✕ ${esc(memberName(UI.analysisOpponentId))}との対局のみ表示中（解除）</button>`;
       }
-      html+=`<div class="card"><h3>このデータの元になった対局一覧（${games.length}件）</h3>${filterNote}`;
-      [...games].sort((a,b)=>b.date.localeCompare(a.date)).forEach(g=>html+=sessionCardHtml(g));
+      const gamesCollapsed = isSectionCollapsed('analysisGames');
+      html+=`<div class="card">
+        <div class="row" style="justify-content:space-between;align-items:center;cursor:pointer" onclick="toggleSectionCollapse('analysisGames')">
+          <h3 style="margin-bottom:0">このデータの元になった対局一覧（${games.length}件）</h3>
+          <span style="font-size:18px">${gamesCollapsed?'▸':'▾'}</span>
+        </div>`;
+      if(!gamesCollapsed){
+        html+=`<div style="margin-top:10px">${filterNote}`;
+        [...games].sort((a,b)=>b.date.localeCompare(a.date)).forEach(g=>html+=sessionCardHtml(g));
+        html+=`</div>`;
+      }
       html+=`</div>`;
     }
   }
   document.getElementById('app').innerHTML=html;
 }
 const Analysis = {
-  setMember(id){ UI.analysisMemberId=id; UI.analysisOpponentId=null; render(); },
+  setMember(id){ UI.analysisMemberId=id; UI.analysisOpponentId=null; UI.expandedOpponentId=null; render(); },
   setOpponent(id){ UI.analysisOpponentId=id; render(); },
   clearOpponent(){ UI.analysisOpponentId=null; render(); },
+  toggleOpponentExpand(oid){ UI.expandedOpponentId = (UI.expandedOpponentId===oid) ? null : oid; render(); },
   setPlayerCount(pc){ UI.analysisPlayerCount=pc; render(); },
   toggleInsights(){ UI.showInsights=!UI.showInsights; render(); }
 };
