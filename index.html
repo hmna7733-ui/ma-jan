@@ -590,8 +590,11 @@ function ensureRuleDefaults(r){
   if(r.akaDoraMan===undefined) r.akaDoraMan = (r.playerCount===3) ? 0 : 2;
   if(r.akaDoraPin===undefined) r.akaDoraPin = 2;
   if(r.akaDoraSou===undefined) r.akaDoraSou = 2;
-  // ノーテン罰符：4人打ちは300、3人打ちは1000がデフォルト
-  if(r.notenPenalty===undefined) r.notenPenalty = (r.playerCount===3) ? 1000 : 300;
+  // ノーテン罰符（場の合計）：4人打ちは3000、3人打ちは2000がデフォルト
+  if(r.notenPenalty===undefined) r.notenPenalty = (r.playerCount===3) ? 2000 : 3000;
+  // 積み棒：4人打ちは100、3人打ちは1000がデフォルト
+  if(r.tsumiboValue===undefined) r.tsumiboValue = (r.playerCount===3) ? 1000 : 100;
+  if(r.tsumiboEnabled===undefined) r.tsumiboEnabled = false;
   // 旧バージョンの選択肢名を新しい選択肢へ移行
   if(r.renchanType==='tenpai') r.renchanType='tenpai_keishiki';
   if(r.shibariType==='agari') r.shibariType='deai';
@@ -689,7 +692,11 @@ function computeSession(rule, entries, options){
   const autoGapTotal = (rule.returnPoints - rule.startPoints) * n / 1000;
   // 「オカ」はこれとは別に、任意で追加できるボーナス点
   const extraOka = rule.okaEnabled ? (rule.oka||0) : 0;
-  const rank1BonusEach = (autoGapTotal + extraOka) / (rank1Count||1);
+  // 持ち点の端数処理（100の位を1000点単位に丸める）で生じるズレを、1位の点数で相殺する
+  const sumRoundedRaw = results.reduce((a,r)=>a+roundRawScoreForRule(r.rawScore, rule), 0);
+  const expectedRawSum = rule.startPoints * n;
+  const residualPt = (sumRoundedRaw - expectedRawSum) / 1000;
+  const rank1BonusEach = (autoGapTotal + extraOka - residualPt) / (rank1Count||1);
   const tobiThreshold = rule.tobiRule==='minus100' ? -100 : 0;
   const babaFromRank = rule.babaFromRank || 2;
   const babaAmount = (rule.babaEnabled && rule.babaAmount) ? rule.babaAmount : 0;
@@ -1051,11 +1058,11 @@ const InputForm = {
     // 箱下の状態が変わったら飛ばし対象の妥当性を再チェック
     const anyBusted = UI.formMemberIds.some(m=>UI.formSign[m]<0);
     if(!anyBusted || UI.formTobashiTarget===mid){ UI.formTobashiTarget=null; }
-    renderModal();
+    rerenderScoreModalPreserve();
   },
   setTobashiTarget(mid){
     UI.formTobashiTarget = (UI.formTobashiTarget===mid) ? null : mid;
-    renderModal();
+    rerenderScoreModalPreserve();
   },
   tapTiebreak(key, mid){
     UI.formTiebreakOrder[key] = UI.formTiebreakOrder[key] || [];
@@ -1070,7 +1077,7 @@ const InputForm = {
   },
   adjustChipDelta(mid, delta){
     UI.formChipDelta[mid] = (UI.formChipDelta[mid]||0) + delta;
-    renderModal();
+    rerenderScoreModalPreserve();
   },
   setChipDelta(mid, val){
     UI.formChipDelta[mid] = numOrZero(val);
@@ -1127,6 +1134,13 @@ const InputForm = {
     if(needsTobashi && !UI.formTobashiTarget){
       renderFormWarningModal('⚠️ 飛ばし先が未選択です！', `箱下の人がいます。トビ罰符（${rule.tobiPenalty}点）を受け取る人の「飛ばし」を選んでから保存してください。`);
       return;
+    }
+    if(rule.chipEnabled && rule.chipPerGameEnabled){
+      const chipSum = UI.formMemberIds.reduce((a,mid)=>a+(UI.formChipDelta[mid]||0),0);
+      if(chipSum!==0){
+        renderFormWarningModal('⚠️ チップの合計が0になっていません！', `チップは対局中に人から人へ移動するだけなので、合計は必ず0になるはずです（現在の合計：${sign(chipSum)}枚）。入力を確認してから保存してください。`);
+        return;
+      }
     }
     if(rule.tiebreakRule==='atamahane'){
       const groups = {};
@@ -1219,6 +1233,15 @@ function tiebreakSectionHtml(){
 function updateTiebreakSection(){
   const el = document.getElementById('tiebreakSection');
   if(el) el.innerHTML = tiebreakSectionHtml();
+}
+
+/* モーダル内のスクロール位置を保ったまま再描画する（＋/－ボタンなどの離散操作用） */
+function rerenderScoreModalPreserve(){
+  const modalEl = document.querySelector('#modalRoot .modal');
+  const scrollTop = modalEl ? modalEl.scrollTop : 0;
+  renderModal();
+  const newModalEl = document.querySelector('#modalRoot .modal');
+  if(newModalEl) newModalEl.scrollTop = scrollTop;
 }
 
 function renderModal(scoreOnly){
@@ -1910,7 +1933,7 @@ function computeRuleBreakdown(memberId, pcFilter){
 /* 円グラフ（着順分布）をCSSのconic-gradientで描画 */
 function pieChartHtml(rankCount, n, maxRank, size){
   size = size || 110;
-  const colors = ['#8ab6e8','#8fcf9f','#f1a29c','#ddbd7c'];
+  const colors = maxRank>=4 ? ['#8ab6e8','#8fcf9f','#c3a6e0','#f1a29c'] : ['#8ab6e8','#8fcf9f','#f1a29c'];
   let acc = 0;
   const stops = [];
   for(let i=0;i<maxRank;i++){
@@ -2373,7 +2396,8 @@ const Settings = {
     d.playerCount=n;
     d.uma = n===3 ? [15,0,-15] : [20,10,-10,-20];
     d.akaDoraMan = n===3 ? 0 : 2;
-    d.notenPenalty = n===3 ? 1000 : 300;
+    d.notenPenalty = n===3 ? 2000 : 3000;
+    d.tsumiboValue = n===3 ? 1000 : 100;
     rerenderRulePreserve();
   },
   applyUmaPreset(arr){ UI.ruleDraft.uma=[...arr]; rerenderRulePreserve(); },
@@ -2834,10 +2858,13 @@ function renderRuleModal(){
             <div class="grow"><div class="hint">5筒</div><input type="number" value="${d.akaDoraPin}" ${d.akaDoraEnabled?'':'disabled'} oninput="Settings.updateDraft('akaDoraPin', numOrZero(this.value))"></div>
             <div class="grow"><div class="hint">5索</div><input type="number" value="${d.akaDoraSou}" ${d.akaDoraEnabled?'':'disabled'} oninput="Settings.updateDraft('akaDoraSou', numOrZero(this.value))"></div>
           </div></div>`)}
-      ${toggleRow('ノーテン罰符','流局時、テンパイ者がノーテン者から受け取る点数', d.notenPenaltyEnabled, "Settings.toggleDraft('notenPenaltyEnabled')",
-        `<div class="field-wrap"><label class="field">ノーテン罰符（積み棒1本あたり）</label>
+      ${toggleRow('ノーテン罰符','流局時、ノーテン者からテンパイ者へ支払う場の合計点', d.notenPenaltyEnabled, "Settings.toggleDraft('notenPenaltyEnabled')",
+        `<div class="field-wrap"><label class="field">ノーテン罰符（場の合計）</label>
           <input type="number" step="1" value="${d.notenPenalty}" ${d.notenPenaltyEnabled?'':'disabled'} oninput="Settings.updateDraft('notenPenalty', numOrZero(this.value))">
-          <div class="hint">積み棒1本あたりの一人頭の点数</div></div>`)}
+          <div class="hint">流局時に場に出る合計の点数</div></div>`)}
+      ${toggleRow('積み棒','本場（積み棒）1本あたりの点数を使う', d.tsumiboEnabled, "Settings.toggleDraft('tsumiboEnabled')",
+        `<div class="field-wrap"><label class="field">積み棒1本あたりの点数</label>
+          <input type="number" step="1" value="${d.tsumiboValue}" ${d.tsumiboEnabled?'':'disabled'} oninput="Settings.updateDraft('tsumiboValue', numOrZero(this.value))"></div>`)}
       ${toggleRow('フリテン','フリテン時の追加ルールを使う', d.furitenAri, "Settings.toggleDraft('furitenAri')",
         `<div class="field-wrap"><label class="field">フリテン時の扱い</label>
           <select ${d.furitenAri?'':'disabled'} onchange="Settings.updateDraft('furitenOpenRequired', this.value)">
@@ -3057,7 +3084,8 @@ function renderRuleDetailModal(){
     ['一発/裏ドラ/カン裏', YN(r.ippatsuAri)+' / '+YN(r.uradoraAri)+' / '+YN(r.kanUradoraAri)],
     ['トビ終了', r.tobiAri ? ((r.tobiRule==='zero'?'0点で終了':'0点継続(-100以下)')+'・罰符'+r.tobiPenalty) : 'なし'],
     ['赤ドラ', r.akaDoraEnabled ? `萬${r.akaDoraMan}/筒${r.akaDoraPin}/索${r.akaDoraSou}` : 'なし'],
-    ['ノーテン罰符', r.notenPenaltyEnabled ? r.notenPenalty+'（積み棒1本あたり）' : 'なし'],
+    ['ノーテン罰符', r.notenPenaltyEnabled ? r.notenPenalty+'（場の合計）' : 'なし'],
+    ['積み棒', r.tsumiboEnabled ? r.tsumiboValue+'点/本' : 'なし'],
     ['フリテン', r.furitenAri ? (r.furitenOpenRequired==='required'?'オープン必要':'オープン不要') : 'なし'],
     ['ダブロン', r.doubleRonAri ? 'ダブロンあり' : '頭ハネ'],
     ...(r.playerCount===4 ? [['トリロン', r.tripleRonAri ? 'トリロンあり' : 'トリロンの場合流局']] : []),
