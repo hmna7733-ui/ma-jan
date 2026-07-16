@@ -574,10 +574,10 @@ function ensureRuleDefaults(r){
     extraYakuman:[],
     doubleYakumanPointAri:true, doubleYakumanChipAri:false, stackYakumanAri:true,
     chiitoi4Ari:false, yonchoroAri:false, shiroPocchiAri:false, hanaPaiAri:false, yakitoriAri:false,
-    rounding:'up', roundingDetailEnabled:false,
+    rounding:'down', roundingDetailEnabled:false,
     roundingThresholdValue:30000, roundingAboveMode:'down', roundingBelowMode:'up',
     rateEnabled:false, rate:0,
-    chipEnabled:false, chipValue:500, chipCondition:'none', yakumanTsumoChip:10, yakumanRonChip:20,
+    chipEnabled:false, chipValue:500, chipCondition:'none', yakumanTsumoChip:10, yakumanRonChip:20, chipPerGameEnabled:false,
     renchanType:'tenpai_keishiki', shibariType:'none', shibariHan:2,
     fuCalculation:true, tsumoLoss:false, tsumoPinAri:true,
     kitaHandling:'nukidora',
@@ -633,6 +633,18 @@ let UI = {
 };
 
 /* ============ 計算ロジック ============ */
+/* 持ち点（最終スコア）の端数処理：100の位を1000単位に丸める。
+   詳細設定が有効な場合は、閾値以上/未満で処理を分ける */
+function roundRawScoreForRule(rawScore, rule){
+  let mode = rule.rounding || 'down';
+  if(rule.roundingDetailEnabled){
+    mode = (rawScore >= rule.roundingThresholdValue) ? rule.roundingAboveMode : rule.roundingBelowMode;
+  }
+  if(mode==='up') return Math.ceil(rawScore/1000)*1000;
+  if(mode==='down') return Math.floor(rawScore/1000)*1000;
+  return Math.round(rawScore/1000)*1000;
+}
+
 function computeSession(rule, entries, options){
   options = options || {};
   const tobashiTargetId = options.tobashiTargetId || null;
@@ -684,7 +696,8 @@ function computeSession(rule, entries, options){
   let babaTotal = 0;
   let tobiPenaltyCollected = 0;
   results.forEach(r=>{
-    let pt = (r.rawScore - rule.returnPoints)/1000 + (r.umaApplied||0);
+    const roundedRaw = roundRawScoreForRule(r.rawScore, rule);
+    let pt = (roundedRaw - rule.returnPoints)/1000 + (r.umaApplied||0);
     if(r.rank===1) pt += rank1BonusEach;
     if(rule.tobiAri && rule.tobiPenalty && r.rawScore<=tobiThreshold){
       pt -= rule.tobiPenalty;
@@ -970,7 +983,7 @@ const InputForm = {
   open(){
     UI.editingHistoryId=null;
     const rule=getRule(UI.home.ruleId);
-    UI.formSign={}; UI.formLeading={}; UI.formEntries={}; UI.formTobashiTarget=null; UI.formTiebreakOrder={};
+    UI.formSign={}; UI.formLeading={}; UI.formEntries={}; UI.formTobashiTarget=null; UI.formTiebreakOrder={}; UI.formChipDelta={};
     UI.home.memberIds.forEach(id=>{
       UI.formSign[id]=1;
       UI.formLeading[id]='';
@@ -989,7 +1002,7 @@ const InputForm = {
     UI.formRuleId=s.ruleId;
     UI.formMemberIds=s.players.map(p=>p.memberId);
     const suffixLen = InputForm.currentSuffixLen();
-    UI.formSign={}; UI.formLeading={}; UI.formEntries={}; UI.formTobashiTarget=null; UI.formTiebreakOrder={};
+    UI.formSign={}; UI.formLeading={}; UI.formEntries={}; UI.formTobashiTarget=null; UI.formTiebreakOrder={}; UI.formChipDelta={...(s.chipDeltas||{})};
     s.players.forEach(p=>{
       const neg = p.rawScore<0;
       const abs = Math.abs(p.rawScore);
@@ -1054,6 +1067,13 @@ const InputForm = {
   resetTiebreak(key){
     UI.formTiebreakOrder[key] = [];
     updateTiebreakSection();
+  },
+  adjustChipDelta(mid, delta){
+    UI.formChipDelta[mid] = (UI.formChipDelta[mid]||0) + delta;
+    renderModal();
+  },
+  setChipDelta(mid, val){
+    UI.formChipDelta[mid] = numOrZero(val);
   },
   updatePreview(mid){
     const el = document.getElementById('score-preview-'+mid);
@@ -1127,11 +1147,27 @@ const InputForm = {
     const tobiThreshold = rule.tobiRule==='minus100' ? -100 : 0;
     const bustedMemberIds = (rule.tobiAri && rule.tobiPenalty) ? entries.filter(e=>e.rawScore<=tobiThreshold).map(e=>e.memberId) : [];
     const tobashiTargetId = bustedMemberIds.length ? UI.formTobashiTarget : null;
+    let sessionRef;
     if(UI.editingHistoryId){
       const s=DB.history.find(x=>x.id===UI.editingHistoryId);
+      // 前回保存時に加算したチップ分を一旦打ち消す（二重加算を防ぐ）
+      if(s.chipDeltas){
+        Object.entries(s.chipDeltas).forEach(([mid,delta])=>{ if(delta) ChipTracker.addToFinalValue(mid, -delta, s.date); });
+      }
       s.ruleId=rule.id; s.players=players; s.babaTotal=computed.babaTotal; s.bustedMemberIds=bustedMemberIds; s.tobashiTargetId=tobashiTargetId;
+      sessionRef = s;
     } else {
-      DB.history.push({ id:uid(), date:todayStr(), ruleId:rule.id, players, babaTotal:computed.babaTotal, bustedMemberIds, tobashiTargetId });
+      sessionRef = { id:uid(), date:todayStr(), ruleId:rule.id, players, babaTotal:computed.babaTotal, bustedMemberIds, tobashiTargetId };
+      DB.history.push(sessionRef);
+    }
+    if(rule.chipEnabled && rule.chipPerGameEnabled){
+      const chipDeltas = {};
+      UI.formMemberIds.forEach(mid=>{
+        const delta = UI.formChipDelta[mid]||0;
+        if(delta){ ChipTracker.addToFinalValue(mid, delta, sessionRef.date); chipDeltas[mid]=delta; }
+      });
+      sessionRef.chipDeltas = chipDeltas;
+      persist('chipTx');
     }
     persist('history');
     UI.showInputForm=false; UI.editingHistoryId=null;
@@ -1227,6 +1263,13 @@ function renderModal(scoreOnly){
       <label class="field">${avatarHtml(mid,20)} ${esc(memberName(mid))} の最終持ち点</label>
       ${mainHtml}
       <div class="small-note" id="score-preview-${mid}" style="text-align:center;margin-top:6px">${UI.formEntries[mid]} 点</div>
+      ${(rule.chipEnabled && rule.chipPerGameEnabled) ? `
+      <div class="row" style="gap:8px;align-items:center;justify-content:center;margin-top:8px">
+        <span class="small-note">チップ:</span>
+        <button class="btn sm secondary" onclick="InputForm.adjustChipDelta('${mid}',-1)">－</button>
+        <input type="number" step="1" value="${UI.formChipDelta[mid]||0}" style="width:64px;text-align:center" onchange="InputForm.setChipDelta('${mid}', this.value)">
+        <button class="btn sm secondary" onclick="InputForm.adjustChipDelta('${mid}',1)">＋</button>
+      </div>` : ''}
     </div>`;
   }).join('');
   const html=`
@@ -1294,6 +1337,12 @@ const ChipTracker = {
     else{ DB.chipTx.push({ id:uid(), date, type:'final', memberId:mid, amount:amt }); }
     persist('chipTx');
     render();
+  },
+  addToFinalValue(mid, delta, date){
+    if(!delta) return;
+    const existing = DB.chipTx.find(x=>x.date===date && x.type==='final' && x.memberId===mid && !x.settlementId);
+    if(existing){ existing.amount += delta; }
+    else{ DB.chipTx.push({ id:uid(), date, type:'final', memberId:mid, amount:delta }); }
   },
   openTransfer(){
     const ids = UI.home.memberIds.length? UI.home.memberIds : DB.members.map(m=>m.id);
@@ -2663,6 +2712,10 @@ function renderRuleModal(){
                 ${[5,10,15,20,25,30,40,50].map(v=>`<option value="${v}" ${d.yakumanRonChip===v?'selected':''}>${v}枚</option>`).join('')}
               </select></div>
           </div>
+          <div style="margin-top:10px">
+            ${toggleRow('1戦ごとに入力','対局結果を記録する画面で、その対局のチップ増減を個人ごとに入力できるようにする', d.chipPerGameEnabled, "Settings.toggleDraft('chipPerGameEnabled')")}
+          </div>
+          <div class="hint">オンにすると、対局結果の入力画面にチップの＋/－ボタンと直接入力欄が表示され、保存するたびに本日のチップへ自動で加算されます（精算確定でリセットされます）。</div>
         </div>`)}
 
       <div class="field-wrap"><label class="field">対局形式</label>
@@ -2884,8 +2937,10 @@ function renderRuleModal(){
           <option value="up" ${d.rounding==='up'?'selected':''}>切り上げ</option>
           <option value="down" ${d.rounding==='down'?'selected':''}>切り捨て</option>
           <option value="round" ${d.rounding==='round'?'selected':''}>四捨五入</option>
-        </select></div>
-      ${toggleRow('端数処理の詳細設定','「◯点以上は切り捨て、◯点未満は切り上げ」のように持ち点の閾値でルールを分けられます', d.roundingDetailEnabled, "Settings.toggleDraft('roundingDetailEnabled')",
+        </select>
+        <div class="hint">持ち点の100の位を1000点単位に丸めます。例：54300点→切り捨てで54000点、切り上げで55000点。</div>
+      </div>
+      ${toggleRow('端数処理の詳細設定','持ち点が一定以上か未満かで丸め方を分けられます', d.roundingDetailEnabled, "Settings.toggleDraft('roundingDetailEnabled')",
         `<div class="field-wrap">
           <div class="row" style="align-items:center">
             <input type="number" step="1000" value="${d.roundingThresholdValue}" ${d.roundingDetailEnabled?'':'disabled'} oninput="Settings.updateDraft('roundingThresholdValue', numOrZero(this.value))" style="width:110px">
@@ -2904,7 +2959,7 @@ function renderRuleModal(){
               <option value="round" ${d.roundingBelowMode==='round'?'selected':''}>四捨五入</option>
             </select>
           </div>
-          <div class="hint">例：2着で30000点以上なら切り捨て、30000点未満なら切り上げ、のようなルールを参考メモとして保存します（実際の点数計算には共通設定が使われます）。</div>
+          <div class="hint">例：30000点以上・切り捨てなら31200点→31000点。30000点未満・切り上げなら26800点→27000点。有効にするとこちらが共通設定より優先されます。</div>
         </div>`)}
 
       <div class="field-wrap"><label class="field">その他ルールメモ（積み棒・途中流局の細則など自由記述）</label>
