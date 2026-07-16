@@ -1990,14 +1990,13 @@ function renderAnalysis(){
     else {
       html+=`<div class="card"><h3>${avatarHtml(m.id,26)} ${esc(m.name)} の通算成績</h3>
         <div class="stat-grid">
-          <div class="stat-box"><div class="v">${s.n}</div><div class="l">対局数</div></div>
+          <div class="stat-box"><div class="v">${s.n}</div><div class="l">総対局数</div></div>
           <div class="stat-box"><div class="v">${s.avgRank.toFixed(2)}</div><div class="l">平均順位</div></div>
-          <div class="stat-box"><div class="v">${s.topRate.toFixed(0)}%</div><div class="l">トップ率</div></div>
-          <div class="stat-box"><div class="v">${s.lastRate.toFixed(0)}%</div><div class="l">ラス率</div></div>
-          <div class="stat-box"><div class="v ${s.totalPoint>0?'pos':s.totalPoint<0?'neg':''}">${sign(Math.round(s.totalPoint*10)/10)}</div><div class="l">通算スコア</div></div>
-          <div class="stat-box"><div class="v">${sign(Math.round(s.avgPoint*100)/100)}</div><div class="l">平均ポイント</div></div>
+          <div class="stat-box" style="background:linear-gradient(180deg,#fff3e6,#ffdfb8)"><div class="v" style="color:#b5651d">${sign(Math.round(s.totalPoint*10)/10)}</div><div class="l">通算スコア</div></div>
+          <div class="stat-box" style="background:linear-gradient(180deg,#e8f1fc,#cfe3fa)"><div class="v" style="color:#2a5d9f">${s.topRate.toFixed(0)}%</div><div class="l">トップ率</div></div>
+          <div class="stat-box" style="background:linear-gradient(180deg,#fdecea,#f6d2ce)"><div class="v" style="color:#b23b2e">${s.lastRate.toFixed(0)}%</div><div class="l">ラス率</div></div>
           <div class="stat-box"><div class="v ${c.chipCount>0?'pos':c.chipCount<0?'neg':''}">${sign(c.chipCount)}</div><div class="l">通算チップ枚数</div></div>
-          <div class="stat-box" style="grid-column:span 2"><div class="v ${c.moneyTotal>0?'pos':c.moneyTotal<0?'neg':''}">${sign(Math.round(c.moneyTotal))}P</div><div class="l">通算収支（精算より）</div></div>
+          <div class="stat-box" style="grid-column:span 3;background:linear-gradient(180deg,#fff9df,#f8e8a8)"><div class="v" style="color:#8a6d1d">${sign(Math.round(c.moneyTotal))}P</div><div class="l">通算収支（精算より）</div></div>
         </div>
         <div class="section-title">着順の割合</div>
         ${pieChartHtml(s.rankCount, s.n, s.maxRank)}
