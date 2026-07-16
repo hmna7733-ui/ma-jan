@@ -527,7 +527,7 @@ function firestoreErrorMessage(e, collectionName){
 /* ============ データ層 ============ */
 function ensureMemberDefaults(m){
   if(m.isSelf===undefined) m.isSelf=false;
-  if(!m.ruleIds) m.ruleIds=[];
+  if(!m.excludedRuleIds) m.excludedRuleIds=[];
   if(!m.aliases) m.aliases=[];
   return m;
 }
@@ -789,7 +789,7 @@ function renderHome(){
     </div>`;
   }
   const todaySessions = DB.history.filter(h=>h.date===todayStr() && h.ruleId===rule.id && !h.settlementId);
-  const visibleMembers = DB.members.filter(m => !m.ruleIds || m.ruleIds.length===0 || m.ruleIds.includes(rule.id));
+  const visibleMembers = DB.members.filter(m => !m.excludedRuleIds || !m.excludedRuleIds.includes(rule.id));
   html += `<label class="field">メンバー選択（${rule.playerCount}人）</label><div class="row wrap">`;
   if(visibleMembers.length===0){
     html += `<span class="small-note">${DB.members.length===0?'メンバーが未登録です。':'このルールのグループに該当するメンバーがいません。'}<button class="link-btn" onclick="Router.go('settings')">設定で追加</button></span>`;
@@ -2106,10 +2106,28 @@ function renderSettings(){
     <button class="btn block" onclick="Settings.newRule()">＋ 新規ルールを追加</button>
     <button class="btn ghost block" style="margin-top:8px" onclick="Settings.openReceiveRuleModal()">🔗 コードでルールを受け取る</button>`;
   } else if(UI.settingsSub==='members'){
+    if(DB.rules.length>0){
+      html+=`<div class="card"><h3>📋 ルール別の登録メンバー</h3>`;
+      DB.rules.forEach(r=>{
+        const key = 'rulemembers_'+r.id;
+        const collapsed = isSectionCollapsed(key);
+        const ms = DB.members.filter(m=>!m.excludedRuleIds||!m.excludedRuleIds.includes(r.id));
+        html+=`<div style="margin-bottom:6px">
+          <div class="row" style="justify-content:space-between;align-items:center;cursor:pointer;padding:8px 4px" onclick="toggleSectionCollapse('${key}')">
+            <div style="font-weight:700;font-size:13.5px">${esc(r.name)}（${ms.length}人）</div>
+            <span style="font-size:16px;color:var(--sub)">${collapsed?'▸':'▾'}</span>
+          </div>
+          ${collapsed?'':`<div class="row wrap" style="gap:8px;padding:0 4px 8px">
+            ${ms.length?ms.map(m=>`<div class="chip" style="cursor:default"><span class="dot" style="background:${m.color}"></span>${esc(m.name)}</div>`).join(''):'<span class="small-note">参加メンバーがいません</span>'}
+          </div>`}
+        </div>`;
+      });
+      html+=`</div>`;
+    }
     html+=`<div class="card"><h3>👤 登録済みメンバー</h3>`;
     if(DB.members.length===0){ html+=`<div class="small-note">未登録</div>`; }
     DB.members.forEach(m=>{
-      const ruleNames = (m.ruleIds||[]).map(rid=>{ const r=getRule(rid); return r?r.name:null; }).filter(Boolean);
+      const excludedNames = (m.excludedRuleIds||[]).map(rid=>{ const r=getRule(rid); return r?r.name:null; }).filter(Boolean);
       html+=`<div class="member-row" style="flex-direction:column;align-items:stretch">
         <div class="row" style="justify-content:space-between;align-items:center">
           <div class="nm">${avatarHtml(m.id,30)} ${esc(m.name)}${m.isSelf?' <span class="small-note">（自分）</span>':''}</div>
@@ -2118,7 +2136,7 @@ function renderSettings(){
             <button class="btn sm danger" onclick="Settings.removeMember('${m.id}')">削除</button>
           </div>
         </div>
-        ${ruleNames.length?`<div class="small-note" style="margin:4px 0 0 38px">参加ルール：${ruleNames.map(esc).join('・')}</div>`:`<div class="small-note" style="margin:4px 0 0 38px">参加ルール：全ルール共通</div>`}
+        ${excludedNames.length?`<div class="small-note" style="margin:4px 0 0 38px">参加ルール：全ルール（${excludedNames.map(esc).join('・')}を除く）</div>`:`<div class="small-note" style="margin:4px 0 0 38px">参加ルール：全ルール</div>`}
         ${(m.aliases||[]).length?`<div class="small-note" style="margin:2px 0 0 38px">別名：${(m.aliases||[]).map(esc).join('・')}</div>`:''}
       </div>`;
     });
@@ -2154,14 +2172,14 @@ const Settings = {
 
   newMember(){
     UI.editingMemberId=null;
-    UI.memberDraft={ id:uid(), name:'', color:PALETTE[DB.members.length % PALETTE.length], isSelf:false, ruleIds:[], aliases:[] };
+    UI.memberDraft={ id:uid(), name:'', color:PALETTE[DB.members.length % PALETTE.length], isSelf:false, excludedRuleIds:[], aliases:[] };
     renderMemberModal();
   },
   toggleMemberDraft(key){ UI.memberDraft[key]=!UI.memberDraft[key]; renderMemberModal(); },
   toggleMemberRule(ruleId){
-    UI.memberDraft.ruleIds = UI.memberDraft.ruleIds || [];
-    const idx = UI.memberDraft.ruleIds.indexOf(ruleId);
-    if(idx>=0) UI.memberDraft.ruleIds.splice(idx,1); else UI.memberDraft.ruleIds.push(ruleId);
+    UI.memberDraft.excludedRuleIds = UI.memberDraft.excludedRuleIds || [];
+    const idx = UI.memberDraft.excludedRuleIds.indexOf(ruleId);
+    if(idx>=0) UI.memberDraft.excludedRuleIds.splice(idx,1); else UI.memberDraft.excludedRuleIds.push(ruleId);
     renderMemberModal();
   },
   addMemberAlias(){
@@ -2242,8 +2260,10 @@ const Settings = {
     const primary = DB.members.find(m=>m.id===primaryId);
     mergeIds.forEach(mid=>{
       const m = DB.members.find(x=>x.id===mid);
-      if(m && m.ruleIds && m.ruleIds.length && primary){
-        primary.ruleIds = Array.from(new Set([...(primary.ruleIds||[]), ...m.ruleIds]));
+      if(m && primary){
+        // 除外方式：どちらかが参加していれば統合後も参加扱いにする（除外は両者が除外している場合のみ残す）
+        const theirExcluded = new Set(m.excludedRuleIds||[]);
+        primary.excludedRuleIds = (primary.excludedRuleIds||[]).filter(rid=>theirExcluded.has(rid));
       }
       if(m && primary){
         primary.aliases = primary.aliases || [];
@@ -2461,7 +2481,7 @@ function resolveMemberNames(names, onResolved, colorsByName){
       nameToId[name] = matches[0].id;
     } else if(matches.length===0){
       const senderColor = colorsByName[name];
-      const m = { id:uid(), name, color: senderColor || PALETTE[DB.members.length % PALETTE.length], isSelf:false, ruleIds:[], aliases:[] };
+      const m = { id:uid(), name, color: senderColor || PALETTE[DB.members.length % PALETTE.length], isSelf:false, excludedRuleIds:[], aliases:[] };
       DB.members.push(m);
       nameToId[name] = m.id;
     } else {
@@ -2484,7 +2504,7 @@ function finalizeNameResolution(){
   p.ambiguous.forEach((a,i)=>{
     const choice = p.choices[i] || a.matches[0].id;
     if(choice==='__new__'){
-      const m = { id:uid(), name:a.name, color:PALETTE[DB.members.length % PALETTE.length], isSelf:false, ruleIds:[], aliases:[] };
+      const m = { id:uid(), name:a.name, color:PALETTE[DB.members.length % PALETTE.length], isSelf:false, excludedRuleIds:[], aliases:[] };
       DB.members.push(m);
       p.nameToId[a.name] = m.id;
     } else {
@@ -2569,12 +2589,12 @@ function renderMemberModal(){
         </div>
       </div>
       ${toggleRow('自分','自分自身のメンバーとしてマークする', d.isSelf, "Settings.toggleMemberDraft('isSelf')")}
-      <div class="field-wrap"><label class="field">参加するルール（複数選択可・未選択なら全ルールに表示）</label>
+      <div class="field-wrap"><label class="field">参加するルール（デフォルトで全て選択済み・参加しないルールをタップして外してください）</label>
         <div class="row wrap">
           ${DB.rules.length===0?`<span class="small-note">ルールがまだありません。先にルールを追加してください。</span>`:
-            DB.rules.map(r=>`<div class="chip ${(d.ruleIds||[]).includes(r.id)?'selected':''}" onclick="Settings.toggleMemberRule('${r.id}')">${esc(r.name)}</div>`).join('')}
+            DB.rules.map(r=>`<div class="chip ${(d.excludedRuleIds||[]).includes(r.id)?'':'selected'}" onclick="Settings.toggleMemberRule('${r.id}')">${esc(r.name)}</div>`).join('')}
         </div>
-        <div class="hint">ルールを選ぶと、そのルールをホーム画面で選んだ時だけこのメンバーが表示されるようになります。何も選ばなければ全てのルールで表示されます。</div>
+        <div class="hint">選択（緑色）＝そのルールを選んだ時にこのメンバーが表示されます。タップして外すと、そのルールでは表示されなくなります。</div>
       </div>
       <button class="btn block" style="margin-top:8px" onclick="Settings.saveMember()">保存する</button>
     </div>
@@ -2964,7 +2984,7 @@ function renderRuleDetailModal(){
   const extraYakumanLabel = {daisharin:'大車輪',daisharin_free:'大車輪（ピンズ以外も可）',surenko:'四連刻',manzu_routou:'萬子老頭',nagashi_tanyao:'流しタンヤオ',other:'その他'};
   const rows = [
     ['人数', r.playerCount+'人打ち'],
-    ['参加メンバー', (()=>{ const ms=DB.members.filter(m=>!m.ruleIds||m.ruleIds.length===0||m.ruleIds.includes(r.id)); return ms.length? ms.map(m=>esc(m.name)).join('・') : 'なし'; })()],
+    ['参加メンバー', (()=>{ const ms=DB.members.filter(m=>!m.excludedRuleIds||!m.excludedRuleIds.includes(r.id)); return ms.length? ms.map(m=>esc(m.name)).join('・') : 'なし'; })()],
     ['レート', r.rateEnabled ? ('1000点＝'+r.rate+'P') : 'なし'],
     ['チップ', r.chipEnabled ? (r.chipValue+'P/枚・発動条件:'+({none:'なし',riichi:'リーチ祝儀',menzen:'面前祝儀',naki:'鳴き祝儀'}[r.chipCondition])) : 'なし'],
     ['役満祝儀', r.chipEnabled ? ('ツモ'+r.yakumanTsumoChip+'枚オール/ロン'+r.yakumanRonChip+'枚') : 'なし'],
