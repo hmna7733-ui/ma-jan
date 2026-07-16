@@ -1861,7 +1861,7 @@ function computeRuleBreakdown(memberId, pcFilter){
 /* 円グラフ（着順分布）をCSSのconic-gradientで描画 */
 function pieChartHtml(rankCount, n, maxRank, size){
   size = size || 110;
-  const colors = ['#4a90d9','#4caf7d','#e0574f','#c8912a'];
+  const colors = ['#8ab6e8','#8fcf9f','#f1a29c','#ddbd7c'];
   let acc = 0;
   const stops = [];
   for(let i=0;i<maxRank;i++){
@@ -2035,15 +2035,19 @@ function renderAnalysis(){
               <div class="stat-grid" style="margin-top:12px">
                 <div class="stat-box"><div class="v">${o.games}</div><div class="l">対局数</div></div>
                 <div class="stat-box"><div class="v">${o.win}-${o.lose}-${o.draw}</div><div class="l">勝-負-分</div></div>
-                <div class="stat-box" style="background:linear-gradient(180deg,#fff3e6,#ffdfb8)"><div class="v" style="color:#b5651d">${sign(Math.round(o.scoreDiff*10)/10)}</div><div class="l">スコア差</div></div>
                 <div class="stat-box"><div class="v">${sign(o.chipDiff)}枚</div><div class="l">チップ差</div></div>
-                <div class="stat-box"><div class="v">${o.tobashiFromCount}</div><div class="l">飛ばした回数</div></div>
-                <div class="stat-box"><div class="v">${o.tobashiToCount}</div><div class="l">飛ばされた回数</div></div>
-                <div class="stat-box" style="grid-column:span 3;background:linear-gradient(180deg,#fff9df,#f8e8a8)"><div class="v" style="color:#8a6d1d">${sign(Math.round(o.moneyDiff))}P</div><div class="l">金額差</div></div>
+                <div class="stat-box" style="background:linear-gradient(180deg,#e8f1fc,#cfe3fa)"><div class="v" style="color:#2a5d9f">${o.games?Math.round((o.rankCounts[0]||0)/o.games*100):0}%</div><div class="l">トップ率</div></div>
+                <div class="stat-box" style="background:linear-gradient(180deg,#fdecea,#f6d2ce)"><div class="v" style="color:#b23b2e">${(o.games&&o.maxRank)?Math.round((o.rankCounts[o.maxRank-1]||0)/o.games*100):0}%</div><div class="l">ラス率</div></div>
+                <div class="stat-box" style="background:linear-gradient(180deg,#fff3e6,#ffdfb8)"><div class="v" style="color:#b5651d">${sign(Math.round(o.scoreDiff*10)/10)}</div><div class="l">スコア差</div></div>
+                <div class="stat-box" style="grid-column:span 3;background:linear-gradient(180deg,#fff9df,#f8e8a8)"><div class="v" style="color:#8a6d1d">${sign(Math.round(o.moneyDiff))}P</div><div class="l">ポイント差</div></div>
               </div>
               <div class="section-title">この相手との着順の割合</div>
               ${o.maxRank?pieChartHtml(o.rankCounts, o.games, o.maxRank, 96):''}
-              <button class="link-btn" onclick="Analysis.setOpponent('${oid}')">この相手との対局一覧を見る</button>
+              <div class="stat-grid" style="margin-top:12px">
+                <div class="stat-box"><div class="v">${o.tobashiFromCount}</div><div class="l">飛ばした回数</div></div>
+                <div class="stat-box"><div class="v">${o.tobashiToCount}</div><div class="l">飛ばされた回数</div></div>
+              </div>
+              <button class="link-btn" style="margin-top:8px" onclick="Analysis.setOpponent('${oid}')">この相手との対局一覧を見る</button>
             `:''}
           </div>`;
         });
@@ -2072,7 +2076,7 @@ function renderAnalysis(){
 }
 const Analysis = {
   setMember(id){ UI.analysisMemberId=id; UI.analysisOpponentId=null; UI.expandedOpponentId=null; render(); },
-  setOpponent(id){ UI.analysisOpponentId=id; render(); },
+  setOpponent(id){ UI.analysisOpponentId=id; localStorage.setItem('mj_collapse_analysisGames','0'); render(); },
   clearOpponent(){ UI.analysisOpponentId=null; render(); },
   toggleOpponentExpand(oid){ UI.expandedOpponentId = (UI.expandedOpponentId===oid) ? null : oid; render(); },
   setPlayerCount(pc){ UI.analysisPlayerCount=pc; render(); },
