@@ -617,7 +617,7 @@ if(DB.rules.length===0){
 
 let UI = {
   tab:'home',
-  home:{ ruleId: DB.rules[0]?.id||null, memberIds: JSON.parse(localStorage.getItem('mj_last_members')||'[]') },
+  home:{ ruleId: null, memberIds: JSON.parse(localStorage.getItem('mj_last_members')||'[]') },
   showInputForm:false,
   editingHistoryId:null,
   formEntries:{},
@@ -768,11 +768,15 @@ function renderHome(){
     <div class="field-wrap">
       <label class="field">ルール</label>
       <select onchange="Home.setRule(this.value)">
-        ${DB.rules.length? DB.rules.map(r=>`<option value="${r.id}" ${r.id===UI.home.ruleId?'selected':''}>${esc(r.name)}（${r.playerCount}人打ち）</option>`).join(''): '<option>ルール未登録</option>'}
+        ${DB.rules.length? `<option value="" ${!UI.home.ruleId?'selected':''}>選択してください</option>` + DB.rules.map(r=>`<option value="${r.id}" ${r.id===UI.home.ruleId?'selected':''}>${esc(r.name)}（${r.playerCount}人打ち）</option>`).join('') : '<option>ルール未登録</option>'}
       </select>
     </div>`;
   if(!rule){
-    html += `<div class="empty-state"><div class="big">📋</div>ルールが未登録です<br><button class="btn secondary" style="margin-top:12px" onclick="Router.go('settings')">設定でルールを追加</button></div></div>`;
+    if(DB.rules.length===0){
+      html += `<div class="empty-state"><div class="big">📋</div>ルールが未登録です<br><button class="btn secondary" style="margin-top:12px" onclick="Router.go('settings')">設定でルールを追加</button></div></div>`;
+    } else {
+      html += `<div class="empty-state"><div class="big">🀄</div>上のプルダウンからルールを選んでください</div></div>`;
+    }
     document.getElementById('app').innerHTML=html; return;
   }
   const effRule = getEffectiveRule(rule, todayStr());
@@ -897,7 +901,7 @@ function sessionCardHtml(s, readOnly){
 }
 
 const Home = {
-  setRule(id){ UI.home.ruleId=id; UI.home.memberIds=[]; render(); },
+  setRule(id){ UI.home.ruleId=id||null; UI.home.memberIds=[]; render(); },
   toggleMember(id){
     const i=UI.home.memberIds.indexOf(id);
     if(i>=0) UI.home.memberIds.splice(i,1); else UI.home.memberIds.push(id);
@@ -1120,11 +1124,14 @@ const InputForm = {
     UI._saving = true;
     const computed=computeSession(rule, entries, {tobashiTargetId: UI.formTobashiTarget, tiebreakOrders: UI.formTiebreakOrder});
     const players=computed.results.map(c=>({memberId:c.memberId, rawScore:c.rawScore, rank:c.rank, point:c.point}));
+    const tobiThreshold = rule.tobiRule==='minus100' ? -100 : 0;
+    const bustedMemberIds = (rule.tobiAri && rule.tobiPenalty) ? entries.filter(e=>e.rawScore<=tobiThreshold).map(e=>e.memberId) : [];
+    const tobashiTargetId = bustedMemberIds.length ? UI.formTobashiTarget : null;
     if(UI.editingHistoryId){
       const s=DB.history.find(x=>x.id===UI.editingHistoryId);
-      s.ruleId=rule.id; s.players=players; s.babaTotal=computed.babaTotal;
+      s.ruleId=rule.id; s.players=players; s.babaTotal=computed.babaTotal; s.bustedMemberIds=bustedMemberIds; s.tobashiTargetId=tobashiTargetId;
     } else {
-      DB.history.push({ id:uid(), date:todayStr(), ruleId:rule.id, players, babaTotal:computed.babaTotal });
+      DB.history.push({ id:uid(), date:todayStr(), ruleId:rule.id, players, babaTotal:computed.babaTotal, bustedMemberIds, tobashiTargetId });
     }
     persist('history');
     UI.showInputForm=false; UI.editingHistoryId=null;
@@ -1385,33 +1392,60 @@ function settlementCardHtml(st){
   </div>`;
 }
 
+function isSectionCollapsed(key){ return localStorage.getItem('mj_collapse_'+key)==='1'; }
+function toggleSectionCollapse(key){
+  const cur = isSectionCollapsed(key);
+  localStorage.setItem('mj_collapse_'+key, cur ? '0' : '1');
+  render();
+}
+
 function renderHistory(){
-  let html=`<div class="card"><h3>🧾 精算表</h3>`;
-  if(DB.settlements.length===0){
-    html+=`<div class="small-note">まだ精算されたものはありません。ホーム画面の「本日の精算を確定する」から作成できます。</div>`;
-  } else {
-    const byDate={};
-    DB.settlements.forEach(st=>{ (byDate[st.date]=byDate[st.date]||[]).push(st); });
-    const dates=Object.keys(byDate).sort().reverse();
-    dates.forEach(d=>{
-      html+=`<div class="section-title">${fmtDate(d)}</div>`;
-      [...byDate[d]].reverse().forEach(st=>html+=settlementCardHtml(st));
-    });
+  let html=`<button class="btn ghost block" style="margin-bottom:14px" onclick="Settlement.openReceiveSettlement()">🔗 コードで精算表を受け取る</button>`;
+
+  const settlementCollapsed = isSectionCollapsed('settlements');
+  html+=`<div class="card">
+    <div class="row" style="justify-content:space-between;align-items:center;cursor:pointer" onclick="toggleSectionCollapse('settlements')">
+      <h3 style="margin-bottom:0">🧾 精算表（${DB.settlements.length}件）</h3>
+      <span style="font-size:18px">${settlementCollapsed?'▸':'▾'}</span>
+    </div>`;
+  if(!settlementCollapsed){
+    if(DB.settlements.length===0){
+      html+=`<div class="small-note" style="margin-top:10px">まだ精算されたものはありません。ホーム画面の「本日の精算を確定する」から作成できます。</div>`;
+    } else {
+      const byDate={};
+      DB.settlements.forEach(st=>{ (byDate[st.date]=byDate[st.date]||[]).push(st); });
+      const dates=Object.keys(byDate).sort().reverse();
+      html+=`<div style="margin-top:10px">`;
+      dates.forEach(d=>{
+        html+=`<div class="section-title">${fmtDate(d)}</div>`;
+        [...byDate[d]].reverse().forEach(st=>html+=settlementCardHtml(st));
+      });
+      html+=`</div>`;
+    }
   }
   html+=`</div>`;
 
   const unsettled = DB.history.filter(h=>!h.settlementId);
-  html+=`<div class="card"><h3>📜 未精算の対局（${unsettled.length}件）</h3>`;
-  if(unsettled.length===0){
-    html+=`<div class="small-note">未精算の対局はありません。</div>`;
-  } else {
-    const byDate2={};
-    unsettled.forEach(s=>{ (byDate2[s.date]=byDate2[s.date]||[]).push(s); });
-    const dates2=Object.keys(byDate2).sort().reverse();
-    dates2.forEach(d=>{
-      html+=`<div class="section-title">${fmtDate(d)}</div>`;
-      [...byDate2[d]].reverse().forEach(s=>html+=sessionCardHtml(s));
-    });
+  const unsettledCollapsed = isSectionCollapsed('unsettled');
+  html+=`<div class="card">
+    <div class="row" style="justify-content:space-between;align-items:center;cursor:pointer" onclick="toggleSectionCollapse('unsettled')">
+      <h3 style="margin-bottom:0">📜 未精算の対局（${unsettled.length}件）</h3>
+      <span style="font-size:18px">${unsettledCollapsed?'▸':'▾'}</span>
+    </div>`;
+  if(!unsettledCollapsed){
+    if(unsettled.length===0){
+      html+=`<div class="small-note" style="margin-top:10px">未精算の対局はありません。</div>`;
+    } else {
+      const byDate2={};
+      unsettled.forEach(s=>{ (byDate2[s.date]=byDate2[s.date]||[]).push(s); });
+      const dates2=Object.keys(byDate2).sort().reverse();
+      html+=`<div style="margin-top:10px">`;
+      dates2.forEach(d=>{
+        html+=`<div class="section-title">${fmtDate(d)}</div>`;
+        [...byDate2[d]].reverse().forEach(s=>html+=sessionCardHtml(s));
+      });
+      html+=`</div>`;
+    }
   }
   html+=`</div>`;
   document.getElementById('app').innerHTML=html;
@@ -1486,11 +1520,12 @@ const Settlement = {
       sessions.forEach(s=>{ s.settlementId=id; });
       chipTxToday.forEach(t=>{ t.settlementId=id; });
       persist('settlements'); persist('history'); persist('chipTx');
+      UI.home.ruleId = null;
       UI.home.memberIds = [];
       localStorage.setItem('mj_last_members', JSON.stringify(UI.home.memberIds));
       UI.chipSign = {};
       render();
-      renderInfoModal('精算を確定しました','履歴タブでいつでも確認・編集できます。ホーム画面はリセットされたので、続けて別のメンバーで新しく記録できます。');
+      renderInfoModal('精算を確定しました','履歴タブでいつでも確認・編集できます。ホーム画面はリセットされたので、続けて別のルール・メンバーで新しく記録できます。');
     };
     const mismatches = [];
     if(sessions.length>0 && Math.abs(scoreCheckTotal)>0.05) mismatches.push(`スコアの差分：${sign(Math.round(scoreCheckTotal*10)/10)}点`);
@@ -1682,6 +1717,18 @@ function computeStats(memberId, pcFilter){
   return { n, rankCount, maxRank, totalPoint, avgRank, topRate, rentaiRate, lastRate, avgPoint: totalPoint/n, games };
 }
 
+/* 飛ばし回数（罰符を受け取った回数）・飛ばされた＝箱下にされた回数 */
+function computeTobashiStats(memberId, pcFilter){
+  pcFilter = pcFilter || 'all';
+  const games = gamesForMember(memberId, pcFilter);
+  let tobashiCount=0, bustedCount=0;
+  games.forEach(s=>{
+    if(s.tobashiTargetId===memberId) tobashiCount++;
+    if(s.bustedMemberIds && s.bustedMemberIds.includes(memberId)) bustedCount++;
+  });
+  return { tobashiCount, bustedCount };
+}
+
 /* 精算表からの通算チップ枚数・通算収支（金額） */
 function computeSettlementStats(memberId, pcFilter){
   pcFilter = pcFilter || 'all';
@@ -1709,7 +1756,7 @@ function computeSettlementStats(memberId, pcFilter){
 function computeHeadToHead(memberId, pcFilter){
   pcFilter = pcFilter || 'all';
   const opp={};
-  const ensure=(oid)=>{ if(!opp[oid]) opp[oid]={games:0,win:0,lose:0,draw:0,scoreDiff:0,chipDiff:0,moneyDiff:0,rankCounts:[0,0,0,0],maxRank:0}; return opp[oid]; };
+  const ensure=(oid)=>{ if(!opp[oid]) opp[oid]={games:0,win:0,lose:0,draw:0,scoreDiff:0,chipDiff:0,moneyDiff:0,rankCounts:[0,0,0,0],maxRank:0,tobashiFromCount:0,tobashiToCount:0}; return opp[oid]; };
 
   /* スコア差：各対局ごとに「勝ち組の取り分は負け組の損失から比例配分される」と考え、
      同じ側（勝ち同士・負け同士）の差分は0、勝ち-負けの間だけ差分が生まれるようにする */
@@ -1726,6 +1773,17 @@ function computeHeadToHead(memberId, pcFilter){
       o.rankCounts[me.rank-1] = (o.rankCounts[me.rank-1]||0)+1;
       o.maxRank = Math.max(o.maxRank, s.players.length);
     });
+    if(s.tobashiTargetId && s.bustedMemberIds && s.bustedMemberIds.length){
+      if(s.tobashiTargetId === memberId){
+        s.bustedMemberIds.forEach(bid=>{
+          if(bid===memberId) return;
+          ensure(bid).tobashiFromCount++;
+        });
+      }
+      if(s.bustedMemberIds.includes(memberId) && s.tobashiTargetId!==memberId){
+        ensure(s.tobashiTargetId).tobashiToCount++;
+      }
+    }
     const winners = s.players.filter(p=>p.point>0);
     const losers = s.players.filter(p=>p.point<0);
     const totalWin = winners.reduce((a,w)=>a+w.point,0);
@@ -1927,6 +1985,7 @@ function renderAnalysis(){
     const m=getMember(UI.analysisMemberId);
     const s=computeStats(UI.analysisMemberId,pcFilter);
     const c=computeSettlementStats(UI.analysisMemberId,pcFilter);
+    const t=computeTobashiStats(UI.analysisMemberId,pcFilter);
     if(!s){ html+=`<div class="card"><div class="small-note">${esc(m?m.name:'')} の対局記録がまだありません</div></div>`; }
     else {
       html+=`<div class="card"><h3>${avatarHtml(m.id,26)} ${esc(m.name)} の通算成績</h3>
@@ -1942,6 +2001,10 @@ function renderAnalysis(){
         </div>
         <div class="section-title">着順の割合</div>
         ${pieChartHtml(s.rankCount, s.n, s.maxRank)}
+        <div class="stat-grid" style="margin-top:12px">
+          <div class="stat-box"><div class="v">${t.tobashiCount}</div><div class="l">飛ばし回数</div></div>
+          <div class="stat-box"><div class="v">${t.bustedCount}</div><div class="l">飛ばされた回数（箱下）</div></div>
+        </div>
       </div>`;
 
       const ruleRows = computeRuleBreakdown(UI.analysisMemberId, pcFilter);
@@ -1970,11 +2033,12 @@ function renderAnalysis(){
               <span class="chip" style="padding:5px 10px;font-size:11.5px;font-weight:600;background:var(--accent-light);cursor:default">${o.win}勝${o.lose}敗${o.draw}分</span>
               <span class="chip" style="padding:5px 10px;font-size:11.5px;font-weight:600;background:var(--accent-light);cursor:default">チップ差${sign(o.chipDiff)}枚</span>
               <span class="chip" style="padding:5px 10px;font-size:11.5px;font-weight:600;background:var(--accent-light);cursor:default">金額差${sign(Math.round(o.moneyDiff))}P</span>
+              ${o.tobashiFromCount?`<span class="chip" style="padding:5px 10px;font-size:11.5px;font-weight:600;background:var(--accent-light);cursor:default">飛ばした${o.tobashiFromCount}回</span>`:''}
+              ${o.tobashiToCount?`<span class="chip" style="padding:5px 10px;font-size:11.5px;font-weight:600;background:var(--accent-light);cursor:default">飛ばされた${o.tobashiToCount}回</span>`:''}
             </div>
             ${o.maxRank?pieChartHtml(o.rankCounts, o.games, o.maxRank, 76):''}
           </div>`;
         });
-        html+=`<div class="card"><div class="hint">差分は「相手の合計値の符号を反転したもの」として計算しています（多人数対局のため厳密な1対1のやり取りではなく、目安の数値です）。円グラフはこの相手との対局における自分の着順分布です。</div></div>`;
       }
       let games=s.games;
       let filterNote='';
