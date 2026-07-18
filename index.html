@@ -1802,6 +1802,26 @@ function computeTobashiStats(memberId, pcFilter){
 }
 
 /* 精算表からの通算チップ枚数・通算収支（金額） */
+/* 精算表のソート：期間・ルールで絞り込んで参加メンバー全員の総合成績を集計 */
+function computeSettlementSort(ruleId, startDate, endDate){
+  const rows = {};
+  DB.settlements.forEach(st=>{
+    if(ruleId && st.ruleId!==ruleId) return;
+    if(startDate && st.date<startDate) return;
+    if(endDate && st.date>endDate) return;
+    st.memberIds.forEach(mid=>{
+      const pm = st.perMember[mid] || {scorePoint:0, chipCount:0};
+      if(!rows[mid]) rows[mid] = {scorePoint:0, chipCount:0, moneyTotal:0};
+      rows[mid].scorePoint += pm.scorePoint||0;
+      rows[mid].chipCount += pm.chipCount||0;
+      const scoreYen = st.rateEnabledUsed ? (pm.scorePoint||0)*st.rateUsed : 0;
+      const chipYen = st.chipEnabledUsed ? (pm.chipCount||0)*st.chipValueUsed : 0;
+      rows[mid].moneyTotal += scoreYen + chipYen;
+    });
+  });
+  return rows;
+}
+
 function computeSettlementStats(memberId, pcFilter){
   pcFilter = pcFilter || 'all';
   let chipCount=0, moneyTotal=0, settlementCount=0;
@@ -2144,6 +2164,47 @@ function renderAnalysis(){
       html+=`</div>`;
     }
   }
+
+  {
+    UI.settlementSortForm = UI.settlementSortForm || { startDate:'', endDate:'', ruleId:'' };
+    const f = UI.settlementSortForm;
+    html+=`<div class="card">
+      <h3>🧾 精算表のソート</h3>
+      <div class="row" style="gap:8px">
+        <div class="field-wrap grow"><label class="field">開始日</label><input type="date" value="${f.startDate}" onchange="Analysis.updateSortForm('startDate', this.value)"></div>
+        <div class="field-wrap grow"><label class="field">終了日</label><input type="date" value="${f.endDate}" onchange="Analysis.updateSortForm('endDate', this.value)"></div>
+      </div>
+      <div class="field-wrap"><label class="field">ルール</label>
+        <select onchange="Analysis.updateSortForm('ruleId', this.value)">
+          <option value="">選択してください</option>
+          ${DB.rules.map(r=>`<option value="${r.id}" ${f.ruleId===r.id?'selected':''}>${esc(r.name)}</option>`).join('')}
+        </select>
+      </div>`;
+    if(!f.ruleId){
+      html+=`<div class="small-note">期間とルールを選ぶと、その期間・ルールに参加した全員の総合成績が表示されます（期間を指定しなければ全期間が対象です）。</div>`;
+    } else {
+      const rows = computeSettlementSort(f.ruleId, f.startDate, f.endDate);
+      const entries = Object.entries(rows).sort((a,b)=>b[1].scorePoint-a[1].scorePoint);
+      if(entries.length===0){
+        html+=`<div class="small-note" style="margin-top:8px">該当する精算表がありません。</div>`;
+      } else {
+        html+=`<div style="margin-top:10px">`;
+        entries.forEach(([mid,v])=>{
+          html+=`<div class="row" style="justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid var(--border)">
+            <div class="nm">${avatarHtml(mid,24)} ${esc(memberName(mid))}</div>
+            <div class="row" style="gap:14px">
+              <span class="${v.scorePoint>0?'pos':v.scorePoint<0?'neg':''}" style="font-weight:700">${sign(Math.round(v.scorePoint*10)/10)}</span>
+              <span class="small-note">${sign(v.chipCount)}枚</span>
+              <span class="${v.moneyTotal>0?'pos':v.moneyTotal<0?'neg':''}" style="font-weight:800">${sign(Math.round(v.moneyTotal))}P</span>
+            </div>
+          </div>`;
+        });
+        html+=`</div>`;
+      }
+    }
+    html+=`</div>`;
+  }
+
   document.getElementById('app').innerHTML=html;
 }
 const Analysis = {
@@ -2152,7 +2213,12 @@ const Analysis = {
   clearOpponent(){ UI.analysisOpponentId=null; render(); },
   toggleOpponentExpand(oid){ UI.expandedOpponentId = (UI.expandedOpponentId===oid) ? null : oid; render(); },
   setPlayerCount(pc){ UI.analysisPlayerCount=pc; render(); },
-  toggleInsights(){ UI.showInsights=!UI.showInsights; render(); }
+  toggleInsights(){ UI.showInsights=!UI.showInsights; render(); },
+  updateSortForm(key, val){
+    UI.settlementSortForm = UI.settlementSortForm || { startDate:'', endDate:'', ruleId:'' };
+    UI.settlementSortForm[key] = val;
+    render();
+  }
 };
 
 /* ============ 描画: 設定 ============ */
@@ -2196,23 +2262,35 @@ function renderSettings(){
       });
       html+=`</div>`;
     }
-    html+=`<div class="card"><h3>👤 登録済みメンバー</h3>`;
-    if(DB.members.length===0){ html+=`<div class="small-note">未登録</div>`; }
-    DB.members.forEach(m=>{
-      const excludedNames = (m.excludedRuleIds||[]).map(rid=>{ const r=getRule(rid); return r?r.name:null; }).filter(Boolean);
-      html+=`<div class="member-row" style="flex-direction:column;align-items:stretch">
-        <div class="row" style="justify-content:space-between;align-items:center">
-          <div class="nm">${avatarHtml(m.id,30)} ${esc(m.name)}${m.isSelf?' <span class="small-note">（自分）</span>':''}</div>
-          <div class="row" style="gap:6px">
-            <button class="btn sm secondary" onclick="Settings.editMember('${m.id}')">編集</button>
-            <button class="btn sm danger" onclick="Settings.removeMember('${m.id}')">削除</button>
-          </div>
-        </div>
-        ${excludedNames.length?`<div class="small-note" style="margin:4px 0 0 38px">参加ルール：全ルール（${excludedNames.map(esc).join('・')}を除く）</div>`:`<div class="small-note" style="margin:4px 0 0 38px">参加ルール：全ルール</div>`}
-        ${(m.aliases||[]).length?`<div class="small-note" style="margin:2px 0 0 38px">別名：${(m.aliases||[]).map(esc).join('・')}</div>`:''}
-      </div>`;
-    });
-    html+=`</div><button class="btn block" onclick="Settings.newMember()">＋ メンバーを追加</button>
+    {
+      const membersCollapsed = isSectionCollapsed('registeredMembers');
+      html+=`<div class="card">
+        <div class="row" style="justify-content:space-between;align-items:center;cursor:pointer" onclick="toggleSectionCollapse('registeredMembers')">
+          <h3 style="margin-bottom:0">👤 登録済みメンバー（${DB.members.length}人）</h3>
+          <span style="font-size:18px">${membersCollapsed?'▸':'▾'}</span>
+        </div>`;
+      if(!membersCollapsed){
+        html+=`<div style="margin-top:10px">`;
+        if(DB.members.length===0){ html+=`<div class="small-note">未登録</div>`; }
+        DB.members.forEach(m=>{
+          const excludedNames = (m.excludedRuleIds||[]).map(rid=>{ const r=getRule(rid); return r?r.name:null; }).filter(Boolean);
+          html+=`<div class="member-row" style="flex-direction:column;align-items:stretch">
+            <div class="row" style="justify-content:space-between;align-items:center">
+              <div class="nm">${avatarHtml(m.id,30)} ${esc(m.name)}${m.isSelf?' <span class="small-note">（自分）</span>':''}</div>
+              <div class="row" style="gap:6px">
+                <button class="btn sm secondary" onclick="Settings.editMember('${m.id}')">編集</button>
+                <button class="btn sm danger" onclick="Settings.removeMember('${m.id}')">削除</button>
+              </div>
+            </div>
+            ${excludedNames.length?`<div class="small-note" style="margin:4px 0 0 38px">参加ルール：全ルール（${excludedNames.map(esc).join('・')}を除く）</div>`:`<div class="small-note" style="margin:4px 0 0 38px">参加ルール：全ルール</div>`}
+            ${(m.aliases||[]).length?`<div class="small-note" style="margin:2px 0 0 38px">別名：${(m.aliases||[]).map(esc).join('・')}</div>`:''}
+          </div>`;
+        });
+        html+=`</div>`;
+      }
+      html+=`</div>`;
+    }
+    html+=`<button class="btn block" onclick="Settings.newMember()">＋ メンバーを追加</button>
     <button class="btn ghost block" style="margin-top:8px" onclick="Settings.openMergeMembers()">🔗 同一人物のメンバーを統合</button>`;
   } else {
     if(currentUser){
