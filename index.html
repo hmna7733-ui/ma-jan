@@ -151,6 +151,11 @@ input:focus,select:focus,textarea:focus{outline:none;border-color:var(--accent);
 .tabbar .tab.active{color:#fff;background:linear-gradient(180deg,var(--accent),var(--accent2));font-weight:800;box-shadow:0 4px 10px -2px rgba(31,122,82,.5);}
 
 .score-board{width:100%;border-collapse:collapse;}
+.sort-row{display:grid;grid-template-columns:1fr 46px 58px 56px 68px;gap:4px;align-items:center;padding:8px 2px;border-bottom:1px solid var(--border);}
+.sort-row.sort-head{border-bottom:1.5px solid var(--text);padding-bottom:6px;}
+.sort-row.sort-head div{font-size:11px;color:var(--sub);font-weight:700;}
+.sort-row .sh{text-align:right;}
+.sort-row .sv{text-align:right;font-weight:700;font-size:12.5px;white-space:nowrap;}
 .score-board th,.score-board td{padding:10px 6px;text-align:left;font-size:13.5px;border-bottom:1px solid var(--border);}
 .score-board th{color:var(--sub);font-weight:700;font-size:11px;}
 .score-board tr:last-child td{border-bottom:none;}
@@ -1520,6 +1525,49 @@ function renderHistory(){
     }
   }
   html+=`</div>`;
+
+  {
+    UI.settlementSortForm = UI.settlementSortForm || { startDate:'', endDate:'', ruleId:'' };
+    const f = UI.settlementSortForm;
+    html+=`<div class="card">
+      <h3>🧾 精算表のソート</h3>
+      <div class="row" style="gap:8px">
+        <div class="field-wrap grow"><label class="field">開始日</label><input type="date" value="${f.startDate}" onchange="History.updateSortForm('startDate', this.value)"></div>
+        <div class="field-wrap grow"><label class="field">終了日</label><input type="date" value="${f.endDate}" onchange="History.updateSortForm('endDate', this.value)"></div>
+      </div>
+      <div class="field-wrap"><label class="field">ルール</label>
+        <select onchange="History.updateSortForm('ruleId', this.value)">
+          <option value="">選択してください</option>
+          ${DB.rules.map(r=>`<option value="${r.id}" ${f.ruleId===r.id?'selected':''}>${esc(r.name)}</option>`).join('')}
+        </select>
+      </div>`;
+    if(!f.ruleId){
+      html+=`<div class="small-note">期間とルールを選ぶと、その期間・ルールに参加した全員の総合成績が表示されます（期間を指定しなければ全期間が対象です）。</div>`;
+    } else {
+      const rows = computeSettlementSort(f.ruleId, f.startDate, f.endDate);
+      const entries = Object.entries(rows).sort((a,b)=>b[1].scorePoint-a[1].scorePoint);
+      if(entries.length===0){
+        html+=`<div class="small-note" style="margin-top:8px">該当する精算表がありません。</div>`;
+      } else {
+        html+=`<div style="margin-top:10px">
+          <div class="sort-row sort-head">
+            <div>名前</div><div class="sh">対局数</div><div class="sh">スコア</div><div class="sh">チップ</div><div class="sh">合計</div>
+          </div>`;
+        entries.forEach(([mid,v])=>{
+          html+=`<div class="sort-row">
+            <div class="nm" style="font-size:13px">${avatarHtml(mid,22)} ${esc(memberName(mid))}</div>
+            <div class="sv">${v.gameCount}</div>
+            <div class="sv ${v.scorePoint>0?'pos':v.scorePoint<0?'neg':''}">${sign(Math.round(v.scorePoint*10)/10)}</div>
+            <div class="sv">${sign(v.chipCount)}枚</div>
+            <div class="sv ${v.moneyTotal>0?'pos':v.moneyTotal<0?'neg':''}">${sign(Math.round(v.moneyTotal))}P</div>
+          </div>`;
+        });
+        html+=`</div>`;
+      }
+    }
+    html+=`</div>`;
+  }
+
   document.getElementById('app').innerHTML=html;
 }
 
@@ -1757,6 +1805,11 @@ const History = {
       DB.history = DB.history.filter(s=>s.id!==id);
       persist('history'); render();
     }, '削除する');
+  },
+  updateSortForm(key, val){
+    UI.settlementSortForm = UI.settlementSortForm || { startDate:'', endDate:'', ruleId:'' };
+    UI.settlementSortForm[key] = val;
+    render();
   }
 };
 
@@ -1811,12 +1864,20 @@ function computeSettlementSort(ruleId, startDate, endDate){
     if(endDate && st.date>endDate) return;
     st.memberIds.forEach(mid=>{
       const pm = st.perMember[mid] || {scorePoint:0, chipCount:0};
-      if(!rows[mid]) rows[mid] = {scorePoint:0, chipCount:0, moneyTotal:0};
+      if(!rows[mid]) rows[mid] = {gameCount:0, scorePoint:0, chipCount:0, moneyTotal:0};
       rows[mid].scorePoint += pm.scorePoint||0;
       rows[mid].chipCount += pm.chipCount||0;
       const scoreYen = st.rateEnabledUsed ? (pm.scorePoint||0)*st.rateUsed : 0;
       const chipYen = st.chipEnabledUsed ? (pm.chipCount||0)*st.chipValueUsed : 0;
       rows[mid].moneyTotal += scoreYen + chipYen;
+    });
+    (st.sessionIds||[]).forEach(sid=>{
+      const s = DB.history.find(h=>h.id===sid);
+      if(!s) return;
+      s.players.forEach(p=>{
+        if(!rows[p.memberId]) rows[p.memberId] = {gameCount:0, scorePoint:0, chipCount:0, moneyTotal:0};
+        rows[p.memberId].gameCount++;
+      });
     });
   });
   return rows;
@@ -2163,46 +2224,6 @@ function renderAnalysis(){
       }
       html+=`</div>`;
     }
-  }
-
-  {
-    UI.settlementSortForm = UI.settlementSortForm || { startDate:'', endDate:'', ruleId:'' };
-    const f = UI.settlementSortForm;
-    html+=`<div class="card">
-      <h3>🧾 精算表のソート</h3>
-      <div class="row" style="gap:8px">
-        <div class="field-wrap grow"><label class="field">開始日</label><input type="date" value="${f.startDate}" onchange="Analysis.updateSortForm('startDate', this.value)"></div>
-        <div class="field-wrap grow"><label class="field">終了日</label><input type="date" value="${f.endDate}" onchange="Analysis.updateSortForm('endDate', this.value)"></div>
-      </div>
-      <div class="field-wrap"><label class="field">ルール</label>
-        <select onchange="Analysis.updateSortForm('ruleId', this.value)">
-          <option value="">選択してください</option>
-          ${DB.rules.map(r=>`<option value="${r.id}" ${f.ruleId===r.id?'selected':''}>${esc(r.name)}</option>`).join('')}
-        </select>
-      </div>`;
-    if(!f.ruleId){
-      html+=`<div class="small-note">期間とルールを選ぶと、その期間・ルールに参加した全員の総合成績が表示されます（期間を指定しなければ全期間が対象です）。</div>`;
-    } else {
-      const rows = computeSettlementSort(f.ruleId, f.startDate, f.endDate);
-      const entries = Object.entries(rows).sort((a,b)=>b[1].scorePoint-a[1].scorePoint);
-      if(entries.length===0){
-        html+=`<div class="small-note" style="margin-top:8px">該当する精算表がありません。</div>`;
-      } else {
-        html+=`<div style="margin-top:10px">`;
-        entries.forEach(([mid,v])=>{
-          html+=`<div class="row" style="justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid var(--border)">
-            <div class="nm">${avatarHtml(mid,24)} ${esc(memberName(mid))}</div>
-            <div class="row" style="gap:14px">
-              <span class="${v.scorePoint>0?'pos':v.scorePoint<0?'neg':''}" style="font-weight:700">${sign(Math.round(v.scorePoint*10)/10)}</span>
-              <span class="small-note">${sign(v.chipCount)}枚</span>
-              <span class="${v.moneyTotal>0?'pos':v.moneyTotal<0?'neg':''}" style="font-weight:800">${sign(Math.round(v.moneyTotal))}P</span>
-            </div>
-          </div>`;
-        });
-        html+=`</div>`;
-      }
-    }
-    html+=`</div>`;
   }
 
   document.getElementById('app').innerHTML=html;
