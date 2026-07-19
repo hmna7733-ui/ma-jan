@@ -919,7 +919,10 @@ function sessionCardHtml(s, readOnly){
   return `<div class="session-card">
     <div class="meta"><div class="d">${fmtDate(s.date)} ・ ${esc(r?r.name:'(ルール削除済)')}</div></div>
     <div class="players">
-      ${sortedP.map(p=>`<span><span class="dot" style="width:7px;height:7px;border-radius:50%;background:${memberColor(p.memberId)};display:inline-block"></span>${p.rank}位 ${esc(memberName(p.memberId))} ${p.rawScore}点 <b class="${p.point>0?'pos':p.point<0?'neg':''}">${sign(p.point)}</b>${yenText(p.point,r)}</span>`).join('')}
+      ${sortedP.map(p=>{
+        const chipDelta = s.chipDeltas ? s.chipDeltas[p.memberId] : undefined;
+        return `<span><span class="dot" style="width:7px;height:7px;border-radius:50%;background:${memberColor(p.memberId)};display:inline-block"></span>${p.rank}位 ${esc(memberName(p.memberId))} ${p.rawScore}点 <b class="${p.point>0?'pos':p.point<0?'neg':''}">${sign(p.point)}</b>${yenText(p.point,r)}${chipDelta?` <span class="small-note">（チップ${sign(chipDelta)}枚）</span>`:''}</span>`;
+      }).join('')}
       ${s.babaTotal?`<span>🏮 場代 <b class="pos">${sign(s.babaTotal)}</b>${yenText(s.babaTotal,r)}</span>`:''}
     </div>
     ${readOnly?'':`<div class="actions">
@@ -2071,26 +2074,76 @@ function pieChartHtml(rankCount, n, maxRank, size){
 /* 簡易ルールベースの分析コメント（AI分析：ローカルで完結する統計サマリー） */
 function generateInsights(memberId, pcFilter){
   const s = computeStats(memberId, pcFilter);
-  if(!s || s.n<2) return ['対局数がもう少し増えると、傾向が見えてきます。'];
+  if(!s || s.n<2) return ['対局数がもう少し増えると、傾向が見えてきます（目安は10半荘以上）。'];
   const notes=[];
-  if(s.topRate>=40) notes.push(`トップ率${s.topRate.toFixed(0)}%は好調です。勝ち切る力があります。`);
-  else if(s.lastRate>=40) notes.push(`ラス率${s.lastRate.toFixed(0)}%とやや高めです。守りの打ち方も意識すると安定するかもしれません。`);
-  if(s.avgRank<=2.0) notes.push(`平均順位${s.avgRank.toFixed(2)}は好成績です。`);
-  else if(s.avgRank>=3.0) notes.push(`平均順位${s.avgRank.toFixed(2)}。着順を落ち着かせる工夫の余地がありそうです。`);
+  const maxRank = s.maxRank;
+  const baseline = (maxRank+1)/2; // 4人打ちなら2.5、3人打ちなら2.0が期待値
+  const secondRate = (s.rankCount[1]||0)/s.n*100;
+  const t = computeTobashiStats(memberId, pcFilter);
+
+  if(pcFilter!=='all'){
+    // 1. 総合評価：平均順位を期待値（4人打ち2.5/3人打ち2.0）と比較
+    const rankDiff = baseline - s.avgRank;
+    if(rankDiff>=0.3) notes.push(`平均順位${s.avgRank.toFixed(2)}は期待値（${baseline.toFixed(1)}）を${rankDiff.toFixed(2)}上回る好成績です。着順を安定して稼げています。`);
+    else if(rankDiff<=-0.3) notes.push(`平均順位${s.avgRank.toFixed(2)}は期待値（${baseline.toFixed(1)}）を${Math.abs(rankDiff).toFixed(2)}下回っています。着順を落ち着かせる余地がありそうです。`);
+    else notes.push(`平均順位${s.avgRank.toFixed(2)}は期待値（${baseline.toFixed(1)}）とほぼ同水準で、標準的な着順分布です。`);
+
+    // 2. ハイリスク／安定型の判定：トップ率とラス率の両方が高いか、両方低いか
+    if(s.topRate>=35 && s.lastRate>=35){
+      notes.push(`トップ率${s.topRate.toFixed(0)}%・ラス率${s.lastRate.toFixed(0)}%とどちらも高く、勝つ時は大きく勝つが着順を落とす時も多い「ハイリスク・ハイリターン型」の分布です。トップ争い以外の局面での被弾を抑えられると、より安定した収支につながりそうです。`);
+    } else if(s.topRate<20 && s.lastRate<20 && secondRate>=35){
+      notes.push(`2位率${secondRate.toFixed(0)}%が突出しており、トップ率${s.topRate.toFixed(0)}%・ラス率${s.lastRate.toFixed(0)}%はともに低めです。大きく崩れない安定感がある一方、勝ちきれずに2位止まりになりやすい傾向が見えます。ここぞという局面での押し引きが鍵になりそうです。`);
+    } else if(s.topRate>=30 && s.lastRate<20){
+      notes.push(`トップ率${s.topRate.toFixed(0)}%に対しラス率${s.lastRate.toFixed(0)}%と低く、勝ち切りつつ大きく崩れない理想的なバランスです。`);
+    }
+
+    // 3. 箱下（トビ）率
+    if(t.bustedCount>0){
+      const bustRate = t.bustedCount/s.n*100;
+      if(bustRate>=15) notes.push(`箱下率${bustRate.toFixed(0)}%（${s.n}戦中${t.bustedCount}回）とやや高めです。持ち点が0付近に近づいた局面での撤退判断を早めると、収支の下振れを抑えられそうです。`);
+      else notes.push(`箱下は${s.n}戦中${t.bustedCount}回（${bustRate.toFixed(0)}%）に留まっており、大崩れは少ない方です。`);
+    }
+  }
+
+  // 4. 直近の調子（直近5戦 vs 通算）
+  if(s.games.length>=8){
+    const sorted=[...s.games].sort((a,b)=>a.date.localeCompare(b.date));
+    const recent=sorted.slice(-5);
+    const recentAvgRank=recent.reduce((a,g)=>a+g.players.find(p=>p.memberId===memberId).rank,0)/recent.length;
+    const recentAvgPoint=recent.reduce((a,g)=>a+g.players.find(p=>p.memberId===memberId).point,0)/recent.length;
+    const diff=s.avgRank-recentAvgRank;
+    if(diff>=0.4) notes.push(`直近5戦の平均順位は${recentAvgRank.toFixed(2)}（平均ポイント${sign(Math.round(recentAvgPoint*10)/10)}）で、通算より好調です。今の打ち筋を継続したいところです。`);
+    else if(diff<=-0.4) notes.push(`直近5戦の平均順位は${recentAvgRank.toFixed(2)}（平均ポイント${sign(Math.round(recentAvgPoint*10)/10)}）で、通算よりやや落ちています。疲れや対面の変化がないか振り返ってみてください。`);
+  }
+
+  // 5. 対戦相手：最も分が良い相手・悪い相手（4戦以上のデータがある相手のみ）
   const opp = computeHeadToHead(memberId, pcFilter);
-  const oppEntries = Object.entries(opp).filter(([,o])=>o.games>=2);
+  const oppEntries = Object.entries(opp).filter(([,o])=>o.games>=4);
   if(oppEntries.length){
     oppEntries.sort((a,b)=>b[1].scoreDiff-a[1].scoreDiff);
     const best = oppEntries[0];
     const worst = oppEntries[oppEntries.length-1];
-    if(best[1].scoreDiff>0) notes.push(`${memberName(best[0])}さんとの対戦成績が良好です（差分 ${sign(Math.round(best[1].scoreDiff*10)/10)}）。`);
-    if(worst[1].scoreDiff<0 && worst[0]!==best[0]) notes.push(`${memberName(worst[0])}さんには分が悪いようです（差分 ${sign(Math.round(worst[1].scoreDiff*10)/10)}）。`);
+    if(best[1].scoreDiff>0) notes.push(`${memberName(best[0])}さんとは${best[1].games}戦で差分${sign(Math.round(best[1].scoreDiff*10)/10)}と相性が良好です。`);
+    if(worst[1].scoreDiff<0 && worst[0]!==best[0]) notes.push(`${memberName(worst[0])}さんとは${worst[1].games}戦で差分${sign(Math.round(worst[1].scoreDiff*10)/10)}とやや分が悪く、対面を意識した打ち回しが有効かもしれません。`);
   }
+
+  // 6. ルール別の得意・不得意（2ルール以上のデータがある場合）
   const rules = computeRuleBreakdown(memberId, pcFilter);
-  if(rules.length>1){
-    const bestRule = rules[0];
-    if(bestRule.rule) notes.push(`「${esc(bestRule.rule.name)}」で最も好成績（通算${sign(Math.round(bestRule.totalPoint*10)/10)}）です。`);
+  const rulesWithEnough = rules.filter(r=>r.n>=3);
+  if(rulesWithEnough.length>=2){
+    const bestRule = rulesWithEnough[0];
+    const worstRule = rulesWithEnough[rulesWithEnough.length-1];
+    if(bestRule.rule) notes.push(`「${esc(bestRule.rule.name)}」（${bestRule.n}戦・平均${bestRule.avgRank.toFixed(2)}位）が最も好成績です。`);
+    if(worstRule.rule && worstRule.ruleId!==bestRule.ruleId) notes.push(`一方「${esc(worstRule.rule.name)}」（${worstRule.n}戦・平均${worstRule.avgRank.toFixed(2)}位）は苦戦気味で、ルールごとの点差・オカの違いが影響している可能性があります。`);
   }
+
+  // 7. 収支効率（1戦あたりの金額）
+  const c = computeSettlementStats(memberId, pcFilter);
+  if(c.moneyTotal!==0 && s.n>0){
+    const perGame = c.moneyTotal/s.n;
+    notes.push(`精算ベースでの1戦あたり収支は${sign(Math.round(perGame))}Pです。`);
+  }
+
   if(notes.length===0) notes.push('目立った偏りのない、安定した成績です。');
   return notes;
 }
@@ -2224,8 +2277,10 @@ function renderAnalysis(){
             ${expanded?`
               <div class="stat-grid" style="margin-top:12px">
                 <div class="stat-box"><div class="v">${o.games}</div><div class="l">対局数</div></div>
-                <div class="stat-box"><div class="v">${o.win}-${o.lose}-${o.draw}</div><div class="l">勝-負-分</div></div>
-                <div class="stat-box"><div class="v">${sign(o.chipDiff)}枚</div><div class="l">チップ差</div></div>
+                ${pcFilter===4?
+                  `<div class="stat-box"><div class="v" style="font-size:15px">${(o.rankCounts.slice(0,4).join('-'))}</div><div class="l">1-2-3-4着</div></div>`
+                  :`<div class="stat-box"><div class="v">${o.win}-${o.lose}-${o.draw}</div><div class="l">勝-負-分</div></div>
+                <div class="stat-box"><div class="v">${sign(o.chipDiff)}枚</div><div class="l">チップ差</div></div>`}
                 <div class="stat-box" style="background:linear-gradient(180deg,#e8f1fc,#cfe3fa)"><div class="v" style="color:#2a5d9f">${o.games?Math.round((o.rankCounts[0]||0)/o.games*100):0}%</div><div class="l">トップ率</div></div>
                 <div class="stat-box" style="background:linear-gradient(180deg,#fdecea,#f6d2ce)"><div class="v" style="color:#b23b2e">${(o.games&&o.maxRank)?Math.round((o.rankCounts[o.maxRank-1]||0)/o.games*100):0}%</div><div class="l">ラス率</div></div>
                 <div class="stat-box" style="background:linear-gradient(180deg,#fff3e6,#ffdfb8)"><div class="v" style="color:#b5651d">${sign(Math.round(o.scoreDiff*10)/10)}</div><div class="l">スコア差</div></div>
