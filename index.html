@@ -2146,10 +2146,11 @@ function renderAnalysis(){
           <div class="${s.totalPoint>0?'pos':s.totalPoint<0?'neg':''}" style="font-size:21px;font-weight:800">${sign(Math.round(s.totalPoint*10)/10)}</div>
         </div>
         <div class="row wrap" style="gap:8px;margin-top:10px">
-          <span class="chip" style="padding:5px 10px;font-size:11.5px;font-weight:600;background:var(--accent-light);cursor:default">試合 ${s.n}</span>
+          <span class="chip" style="padding:5px 10px;font-size:11.5px;font-weight:600;background:var(--accent-light);cursor:default">総対局数 ${s.n}</span>
+          ${pcFilter!=='all'?`
           <span class="chip" style="padding:5px 10px;font-size:11.5px;font-weight:600;background:var(--accent-light);cursor:default">平均${s.avgRank.toFixed(2)}位</span>
           <span class="chip" style="padding:5px 10px;font-size:11.5px;font-weight:600;background:var(--accent-light);cursor:default">トップ${s.topRate.toFixed(0)}%</span>
-          <span class="chip" style="padding:5px 10px;font-size:11.5px;font-weight:600;background:var(--accent-light);cursor:default">ラス${s.lastRate.toFixed(0)}%</span>
+          <span class="chip" style="padding:5px 10px;font-size:11.5px;font-weight:600;background:var(--accent-light);cursor:default">ラス${s.lastRate.toFixed(0)}%</span>`:''}
         </div>
         <div class="row" style="gap:16px;margin-top:10px;padding-top:10px;border-top:1px dashed var(--border)">
           <div class="grow">
@@ -2173,19 +2174,26 @@ function renderAnalysis(){
       html+=`<div class="card"><h3>${avatarHtml(m.id,26)} ${esc(m.name)} の通算成績</h3>
         <div class="stat-grid">
           <div class="stat-box"><div class="v">${s.n}</div><div class="l">総対局数</div></div>
+          ${pcFilter==='all' ? `
+          <div class="stat-box"><div class="v ${c.chipCount>0?'pos':c.chipCount<0?'neg':''}">${sign(c.chipCount)}</div><div class="l">通算チップ枚数</div></div>
+          <div class="stat-box" style="background:linear-gradient(180deg,#fff3e6,#ffdfb8)"><div class="v" style="color:#b5651d">${sign(Math.round(s.totalPoint*10)/10)}</div><div class="l">通算スコア</div></div>
+          <div class="stat-box" style="grid-column:span 3;background:linear-gradient(180deg,#fff9df,#f8e8a8)"><div class="v" style="color:#8a6d1d">${sign(Math.round(c.moneyTotal))}P</div><div class="l">通算収支（精算より）</div></div>
+          ` : `
           <div class="stat-box"><div class="v">${s.avgRank.toFixed(2)}</div><div class="l">平均順位</div></div>
           <div class="stat-box"><div class="v ${c.chipCount>0?'pos':c.chipCount<0?'neg':''}">${sign(c.chipCount)}</div><div class="l">通算チップ枚数</div></div>
           <div class="stat-box" style="background:linear-gradient(180deg,#e8f1fc,#cfe3fa)"><div class="v" style="color:#2a5d9f">${s.topRate.toFixed(0)}%</div><div class="l">トップ率</div></div>
           <div class="stat-box" style="background:linear-gradient(180deg,#fdecea,#f6d2ce)"><div class="v" style="color:#b23b2e">${s.lastRate.toFixed(0)}%</div><div class="l">ラス率</div></div>
           <div class="stat-box" style="background:linear-gradient(180deg,#fff3e6,#ffdfb8)"><div class="v" style="color:#b5651d">${sign(Math.round(s.totalPoint*10)/10)}</div><div class="l">通算スコア</div></div>
           <div class="stat-box" style="grid-column:span 3;background:linear-gradient(180deg,#fff9df,#f8e8a8)"><div class="v" style="color:#8a6d1d">${sign(Math.round(c.moneyTotal))}P</div><div class="l">通算収支（精算より）</div></div>
+          `}
         </div>
+        ${pcFilter!=='all' ? `
         <div class="section-title">着順の割合</div>
         ${pieChartHtml(s.rankCount, s.n, s.maxRank)}
         <div class="stat-grid" style="margin-top:12px">
           <div class="stat-box"><div class="v">${t.tobashiCount}</div><div class="l">飛ばし回数</div></div>
           <div class="stat-box"><div class="v">${t.bustedCount}</div><div class="l">飛ばされた回数（箱下）</div></div>
-        </div>
+        </div>` : ''}
       </div>`;
 
       const ruleRows = computeRuleBreakdown(UI.analysisMemberId, pcFilter);
