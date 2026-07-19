@@ -508,11 +508,11 @@ function pushSettlementToGlobalRanking(settlement, rule){
 
 /* ============ 管理者機能 ============ */
 let _isAdminCache = null;
-async function checkIsAdmin(){
+async function checkIsAdmin(force){
   if(!fbAuth || !currentUser){ UI.adminCheckDebug = { uid:null, note:'未ログイン' }; return false; }
-  if(_isAdminCache!==null) return _isAdminCache;
+  if(_isAdminCache!==null && !force) return _isAdminCache;
   try{
-    const doc = await fbDb.collection('mahjong_admins').doc(currentUser.uid).get();
+    const doc = await fbDb.collection('mahjong_admins').doc(currentUser.uid).get({ source:'server' });
     _isAdminCache = doc.exists;
     UI.adminCheckDebug = { uid: currentUser.uid, exists: doc.exists, data: doc.exists ? doc.data() : null, error: null };
   }catch(e){
@@ -2723,6 +2723,7 @@ function renderRanking(){
         ${UI.adminCheckDebug.error?'エラー: '+esc(UI.adminCheckDebug.error):''}
         ${UI.adminCheckDebug.data?'<br>ドキュメント内容: '+esc(JSON.stringify(UI.adminCheckDebug.data)):''}
       </div>
+      <button class="btn sm secondary block" style="margin-top:8px" onclick="Ranking.recheckAdmin()">🔄 サーバーから強制的に再チェック</button>
     </div>`;
   }
 
@@ -2733,6 +2734,10 @@ const Ranking = {
   setScope(scope){ UI.rankingScope=scope; UI.rankingExpandedName=null; render(); },
   setMonth(month){ UI.rankingMonth=month; render(); },
   setCategory(cat){ UI.rankingCategory=cat; UI.rankingExpandedName=null; if(cat==='rating') UI.rankingScope='all'; render(); },
+  async recheckAdmin(){
+    UI.isAdmin = await checkIsAdmin(true);
+    render();
+  },
   toggleExpand(name){ UI.rankingExpandedName = (UI.rankingExpandedName===name) ? null : name; render(); },
   reload(){ UI.rankingData=null; UI.rankingSettlementData=null; UI.rankingError=null; render(); },
   updateAliasForm(key,val){
