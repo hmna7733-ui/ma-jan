@@ -414,6 +414,7 @@ function handleAuthChange(user){
     showApp();
     setSyncDot(true);
     updateAccountNameDisplay();
+    _isAdminCache = null;
     checkIsAdmin().then(v=>{ UI.isAdmin=v; if(UI.tab==='history'||UI.tab==='ranking') render(); });
     _unsubscribeSnapshot = userDocRef().onSnapshot(doc=>{
       if(_isUploading) return;
@@ -497,6 +498,8 @@ function doLogout(){
   showConfirmModal('ログアウトしますか？', 'ログアウトすると、この端末のキャッシュも削除されます。', ()=>{
     localStorage.removeItem(LS_KEY);
     localStorage.removeItem(SKIP_KEY);
+    _isAdminCache = null;
+    UI.isAdmin = false;
     fbAuth.signOut();
   }, 'ログアウトする');
 }
@@ -2484,7 +2487,7 @@ function renderRanking(){
   }
 
   html += `<div class="card"><h3 style="margin-bottom:10px">🏆 ランキング</h3>`;
-  UI.rankingPlayerCount = UI.rankingPlayerCount || 4;
+  UI.rankingPlayerCount = UI.rankingPlayerCount || 3;
   html += `<div class="mode-switch">
     <div class="ms-opt ${UI.rankingPlayerCount===3?'active':''}" onclick="Ranking.setPlayerCount(3)">3人打ち</div>
     <div class="ms-opt ${UI.rankingPlayerCount===4?'active':''}" onclick="Ranking.setPlayerCount(4)">4人打ち</div>
