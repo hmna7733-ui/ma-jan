@@ -2730,15 +2730,17 @@ function renderRanking(){
 
   html += `<div class="card"><div class="small-note">アプリを使っている全アカウントの対局データ（同じ対局の重複は自動で除外）をもとに集計しています。名前が完全一致する人同士でまとめて集計されるため、表記ゆれがあると別人として分かれて表示されることがあります。</div></div>`;
 
-  if(UI.adminCheckDebug){
+  {
+    const dbg = UI.adminCheckDebug || {};
     html += `<div class="card"><h3>🔍 管理者判定デバッグ情報</h3>
       <div class="small-note" style="word-break:break-all">
-        UID: ${esc(UI.adminCheckDebug.uid||'(なし)')}<br>
-        判定結果: ${UI.adminCheckDebug.exists?'管理者ドキュメントあり':'管理者ドキュメントなし、またはエラー'}<br>
-        ${UI.adminCheckDebug.error?'エラー: '+esc(UI.adminCheckDebug.error):''}
-        ${UI.adminCheckDebug.data?'<br>ドキュメント内容: '+esc(JSON.stringify(UI.adminCheckDebug.data)):''}
+        UID: ${esc(dbg.uid||'(まだ取得していません)')}<br>
+        判定結果: ${dbg.exists?'管理者ドキュメントあり':'管理者ドキュメントなし、またはエラー'}<br>
+        ${dbg.error?'エラー: '+esc(dbg.error)+'<br>':''}
+        ${dbg.data?'ドキュメント内容: '+esc(JSON.stringify(dbg.data))+'<br>':''}
+        最終チェック時刻: ${esc(dbg.checkedAt||'(まだ手動チェックしていません)')}
       </div>
-      <button class="btn sm secondary block" style="margin-top:8px" onclick="Ranking.recheckAdmin()">🔄 サーバーから強制的に再チェック</button>
+      <button class="btn sm secondary block" style="margin-top:8px" ${UI.rankingRecheckLoading?'disabled':''} onclick="Ranking.recheckAdmin()">${UI.rankingRecheckLoading?'確認中…':'🔄 サーバーから強制的に再チェック'}</button>
     </div>`;
   }
 
@@ -2750,7 +2752,16 @@ const Ranking = {
   setMonth(month){ UI.rankingMonth=month; render(); },
   setCategory(cat){ UI.rankingCategory=cat; UI.rankingExpandedName=null; if(cat==='rating') UI.rankingScope='all'; render(); },
   async recheckAdmin(){
-    UI.isAdmin = await checkIsAdmin(true);
+    UI.rankingRecheckLoading = true;
+    render();
+    try{
+      _isAdminCache = null;
+      UI.isAdmin = await checkIsAdmin(true);
+      if(UI.adminCheckDebug) UI.adminCheckDebug.checkedAt = new Date().toLocaleTimeString('ja-JP');
+    }catch(e){
+      UI.adminCheckDebug = { uid: currentUser?currentUser.uid:null, exists:false, error: 'recheckAdmin例外: '+((e&&e.message)||String(e)), checkedAt: new Date().toLocaleTimeString('ja-JP') };
+    }
+    UI.rankingRecheckLoading = false;
     render();
   },
   toggleExpand(name){ UI.rankingExpandedName = (UI.rankingExpandedName===name) ? null : name; render(); },
