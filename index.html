@@ -481,6 +481,31 @@ function pushSessionToGlobalRanking(session, rule){
     });
 }
 
+function pushSettlementToGlobalRanking(settlement, rule){
+  if(!fbAuth || !currentUser || !settlement.globalId) return;
+  const perMemberByName = {};
+  (settlement.memberIds||[]).forEach(mid=>{
+    const pm = settlement.perMember[mid] || {scorePoint:0, chipCount:0};
+    const scoreYen = settlement.rateEnabledUsed ? (pm.scorePoint||0)*settlement.rateUsed : 0;
+    const chipYen = settlement.chipEnabledUsed ? (pm.chipCount||0)*settlement.chipValueUsed : 0;
+    perMemberByName[memberName(mid)] = {
+      scorePoint: pm.scorePoint||0,
+      chipCount: pm.chipCount||0,
+      moneyTotal: scoreYen + chipYen
+    };
+  });
+  const payload = {
+    date: settlement.date,
+    ruleName: rule ? rule.name : '',
+    playerCount: rule ? rule.playerCount : (settlement.memberIds||[]).length,
+    perMemberByName,
+    contributedBy: currentUser.uid,
+    updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+  };
+  fbDb.collection('mahjong_global_settlements').doc(settlement.globalId).set(payload)
+    .catch(e=>console.error('global settlement ranking push error', e));
+}
+
 /* ============ 管理者機能 ============ */
 let _isAdminCache = null;
 async function checkIsAdmin(){
@@ -1740,7 +1765,7 @@ const Settlement = {
       const id = uid();
       const selfMember = DB.members.find(m=>m.isSelf);
       const settlement = {
-        id, date:todayStr(), ruleId:rule.id, memberIds:[...UI.home.memberIds],
+        id, globalId: uid(), date:todayStr(), ruleId:rule.id, memberIds:[...UI.home.memberIds],
         sessionIds:sessions.map(s=>s.id), chipTxIds:chipTxToday.map(t=>t.id),
         perMember,
         rateEnabledUsed: rule.rateEnabled, rateUsed: effRule.rate,
@@ -1752,6 +1777,7 @@ const Settlement = {
       DB.settlements.push(settlement);
       sessions.forEach(s=>{ s.settlementId=id; });
       chipTxToday.forEach(t=>{ t.settlementId=id; });
+      pushSettlementToGlobalRanking(settlement, rule);
       persist('settlements'); persist('history'); persist('chipTx');
       UI.home.ruleId = null;
       UI.home.memberIds = [];
@@ -1803,8 +1829,10 @@ const Settlement = {
     const sessions = DB.history.filter(h=>st.sessionIds.includes(h.id));
     let needsPersist = false;
     sessions.forEach(s=>{ if(!s.globalId){ s.globalId = uid(); needsPersist = true; } });
-    if(needsPersist) persist('history');
+    if(!st.globalId){ st.globalId = uid(); needsPersist = true; }
+    if(needsPersist){ persist('history'); persist('settlements'); }
     sessions.forEach(s=>pushSessionToGlobalRanking(s, rule));
+    pushSettlementToGlobalRanking(st, rule);
     const perMemberByName = {};
     const memberColorByName = {};
     st.memberIds.forEach(mid=>{
@@ -1827,7 +1855,8 @@ const Settlement = {
       })),
       rateEnabledUsed: st.rateEnabledUsed, rateUsed: st.rateUsed,
       chipEnabledUsed: st.chipEnabledUsed, chipValueUsed: st.chipValueUsed,
-      creatorName: st.creatorName || null, creatorUid: st.creatorUid || null
+      creatorName: st.creatorName || null, creatorUid: st.creatorUid || null,
+      globalId: st.globalId || null
     };
     const code = Math.random().toString(36).slice(2,8).toUpperCase();
     try{
@@ -1875,8 +1904,8 @@ const Settlement = {
           const mid = nameToId[name];
           if(mid) perMember[mid] = { scorePoint: v.scorePoint||0, chipCount: v.chipCount||0 };
         });
-        DB.settlements.push({
-          id: settlementId, date: payload.date, ruleId: rule.id,
+        const newSettlement = {
+          id: settlementId, globalId: payload.globalId||uid(), date: payload.date, ruleId: rule.id,
           memberIds: (payload.memberNames||[]).map(n=>nameToId[n]),
           sessionIds: newSessionIds, chipTxIds: [],
           perMember,
@@ -1884,8 +1913,10 @@ const Settlement = {
           chipEnabledUsed: payload.chipEnabledUsed, chipValueUsed: payload.chipValueUsed,
           creatorName: payload.creatorName || null, creatorUid: payload.creatorUid || null,
           confirmedAt: Date.now()
-        });
+        };
+        DB.settlements.push(newSettlement);
         persist('members'); persist('rules'); persist('history'); persist('settlements');
+        pushSettlementToGlobalRanking(newSettlement, rule);
         UI.receiveSettlementCode=null;
         document.getElementById('modalRoot').innerHTML='';
         render();
@@ -1958,14 +1989,14 @@ function gamesForMember(memberId, pcFilter){
    卓の平均Rは自分を含めた全員の平均。初期値は全員1500。
    人数（3人打ち/4人打ち）ごとに完全に別のレーティングとして管理する。 */
 /* 全アカウント共有のグローバルランキング集計（名前をキーに集計。重複対局はglobalIdで既に排除済み） */
-function simulateGlobalRatings(games, playerCount, aliasMap){
+function simulateGlobalRatings(games, playerCount, aliasMap, month){
   aliasMap = aliasMap || {};
   const resolveName = (name)=>{
     let n = name, guard=0;
     while(aliasMap[n] && aliasMap[n]!==n && guard<5){ n = aliasMap[n]; guard++; }
     return n;
   };
-  const filtered = (games||[]).filter(g=>g.playerCount===playerCount && g.players && g.players.length===playerCount)
+  const filtered = (games||[]).filter(g=>g.playerCount===playerCount && g.players && g.players.length===playerCount && (!month || (g.date||'').startsWith(month)))
     .slice().sort((a,b)=>(a.date||'').localeCompare(b.date||''));
   const ratings={}, gameCounts={}, stats={};
   const ensure=(name)=>{ if(ratings[name]===undefined){ ratings[name]=1500; gameCounts[name]=0; stats[name]={n:0, rankSum:0, top:0}; } };
@@ -1995,6 +2026,76 @@ function simulateGlobalRatings(games, playerCount, aliasMap){
     avgRank: stats[name].n ? stats[name].rankSum/stats[name].n : 0,
     topRate: stats[name].n ? stats[name].top/stats[name].n*100 : 0
   })).sort((a,b)=>b.rating-a.rating);
+}
+
+function resolveGlobalName(aliasMap, name){
+  aliasMap = aliasMap || {};
+  let n = name, guard=0;
+  while(aliasMap[n] && aliasMap[n]!==n && guard<5){ n = aliasMap[n]; guard++; }
+  return n;
+}
+/* 素点王：対局ごとのポイント合計 */
+function computeScoreRanking(games, playerCount, aliasMap, month){
+  const rows = {};
+  (games||[]).forEach(g=>{
+    if(g.playerCount!==playerCount) return;
+    if(month && !(g.date||'').startsWith(month)) return;
+    (g.players||[]).forEach(p=>{
+      const name = resolveGlobalName(aliasMap, p.name);
+      if(!rows[name]) rows[name] = {name, value:0, games:0};
+      rows[name].value += p.point||0;
+      rows[name].games++;
+    });
+  });
+  return Object.values(rows).sort((a,b)=>b.value-a.value);
+}
+/* 鉄壁王：ラス回避率（100%－ラス率） */
+function computeLastAvoidRanking(games, playerCount, aliasMap, month){
+  const rows = {};
+  (games||[]).forEach(g=>{
+    if(g.playerCount!==playerCount) return;
+    if(month && !(g.date||'').startsWith(month)) return;
+    (g.players||[]).forEach(p=>{
+      const name = resolveGlobalName(aliasMap, p.name);
+      if(!rows[name]) rows[name] = {name, games:0, lastCount:0};
+      rows[name].games++;
+      if(p.rank===playerCount) rows[name].lastCount++;
+    });
+  });
+  return Object.values(rows).map(r=>({
+    name:r.name, games:r.games,
+    value: r.games ? (1 - r.lastCount/r.games)*100 : 0
+  })).sort((a,b)=>b.value-a.value);
+}
+/* チップ王：チップ差枚数の合計（精算表ベース） */
+function computeChipRanking(settlements, playerCount, aliasMap, month){
+  const rows = {};
+  (settlements||[]).forEach(st=>{
+    if(st.playerCount!==playerCount) return;
+    if(month && !(st.date||'').startsWith(month)) return;
+    Object.entries(st.perMemberByName||{}).forEach(([rawName,v])=>{
+      const name = resolveGlobalName(aliasMap, rawName);
+      if(!rows[name]) rows[name] = {name, value:0, games:0};
+      rows[name].value += v.chipCount||0;
+      rows[name].games++;
+    });
+  });
+  return Object.values(rows).sort((a,b)=>b.value-a.value);
+}
+/* 大富豪：通算収支（P）の合計（精算表ベース） */
+function computeMoneyRanking(settlements, playerCount, aliasMap, month){
+  const rows = {};
+  (settlements||[]).forEach(st=>{
+    if(st.playerCount!==playerCount) return;
+    if(month && !(st.date||'').startsWith(month)) return;
+    Object.entries(st.perMemberByName||{}).forEach(([rawName,v])=>{
+      const name = resolveGlobalName(aliasMap, rawName);
+      if(!rows[name]) rows[name] = {name, value:0, games:0};
+      rows[name].value += v.moneyTotal||0;
+      rows[name].games++;
+    });
+  });
+  return Object.values(rows).sort((a,b)=>b.value-a.value);
 }
 
 function simulateRatings(playerCount){
@@ -2415,6 +2516,8 @@ async function loadRankingData(){
   try{
     const snap = await fbDb.collection('mahjong_global_games').get();
     UI.rankingData = snap.docs.map(d=>({ id:d.id, ...d.data() }));
+    const stSnap = await fbDb.collection('mahjong_global_settlements').get();
+    UI.rankingSettlementData = stSnap.docs.map(d=>({ id:d.id, ...d.data() }));
     const aliasSnap = await fbDb.collection('mahjong_global_name_aliases').get();
     const aliasMap = {};
     aliasSnap.docs.forEach(d=>{ aliasMap[d.id] = d.data().canonicalName; });
@@ -2488,34 +2591,76 @@ function renderRanking(){
 
   html += `<div class="card"><h3 style="margin-bottom:10px">🏆 ランキング</h3>`;
   UI.rankingPlayerCount = UI.rankingPlayerCount || 3;
+  UI.rankingScope = UI.rankingScope || 'all';
+  UI.rankingCategory = UI.rankingCategory || 'rating';
+  UI.rankingMonth = UI.rankingMonth || todayStr().slice(0,7);
   html += `<div class="mode-switch">
     <div class="ms-opt ${UI.rankingPlayerCount===3?'active':''}" onclick="Ranking.setPlayerCount(3)">3人打ち</div>
     <div class="ms-opt ${UI.rankingPlayerCount===4?'active':''}" onclick="Ranking.setPlayerCount(4)">4人打ち</div>
-  </div></div>`;
+  </div>
+  <div class="mode-switch" style="margin-top:8px">
+    <div class="ms-opt ${UI.rankingScope==='all'?'active':''}" onclick="Ranking.setScope('all')">総合ランキング</div>
+    <div class="ms-opt ${UI.rankingScope==='month'?'active':''}" onclick="Ranking.setScope('month')">月間ランキング</div>
+  </div>
+  ${UI.rankingScope==='month'?`<input type="month" value="${UI.rankingMonth}" style="margin-top:8px" onchange="Ranking.setMonth(this.value)">`:''}
+  <div class="row wrap" style="gap:6px;margin-top:10px">
+    ${[['rating','雀力王'],['score','素点王'],['chip','チップ王'],['lastavoid','鉄壁王'],['money','大富豪']].map(([key,label])=>
+      `<div class="chip ${UI.rankingCategory===key?'selected':''}" onclick="Ranking.setCategory('${key}')">${label}</div>`
+    ).join('')}
+  </div>
+  </div>`;
 
-  const rows = simulateGlobalRatings(UI.rankingData, UI.rankingPlayerCount, UI.rankingAliasMap);
-  if(rows.length===0){
+  const month = UI.rankingScope==='month' ? UI.rankingMonth : null;
+  const ratingRows = simulateGlobalRatings(UI.rankingData, UI.rankingPlayerCount, UI.rankingAliasMap, month);
+  const ratingByName = {};
+  ratingRows.forEach(r=>{ ratingByName[r.name]=r; });
+
+  let displayRows;
+  let valueFormat, valueLabel;
+  if(UI.rankingCategory==='rating'){
+    displayRows = ratingRows.map(r=>({ name:r.name, value:r.rating, games:r.games, avgRank:r.avgRank, topRate:r.topRate }));
+    valueFormat = v=>v.toFixed(1); valueLabel='';
+  } else if(UI.rankingCategory==='score'){
+    displayRows = computeScoreRanking(UI.rankingData, UI.rankingPlayerCount, UI.rankingAliasMap, month);
+    valueFormat = v=>sign(Math.round(v*10)/10); valueLabel='';
+  } else if(UI.rankingCategory==='chip'){
+    displayRows = computeChipRanking(UI.rankingSettlementData, UI.rankingPlayerCount, UI.rankingAliasMap, month);
+    valueFormat = v=>sign(v)+'枚'; valueLabel='';
+  } else if(UI.rankingCategory==='lastavoid'){
+    displayRows = computeLastAvoidRanking(UI.rankingData, UI.rankingPlayerCount, UI.rankingAliasMap, month);
+    valueFormat = v=>v.toFixed(0)+'%'; valueLabel='';
+  } else {
+    displayRows = computeMoneyRanking(UI.rankingSettlementData, UI.rankingPlayerCount, UI.rankingAliasMap, month);
+    valueFormat = v=>sign(Math.round(v))+'P'; valueLabel='';
+  }
+
+  if(displayRows.length===0){
     html += `<div class="card"><div class="small-note">まだデータがありません。</div></div>`;
   } else {
-    rows.forEach((r,idx)=>{
-      const tier = ratingTier(r.rating);
+    displayRows.forEach((r,idx)=>{
+      const ratingInfo = ratingByName[r.name];
+      const tier = ratingTier(ratingInfo ? ratingInfo.rating : 1500);
       const expanded = UI.rankingExpandedName===r.name;
+      const isTop3 = idx<3;
       const waveLayer = tier.waves ? `<svg class="rating-card-waves" viewBox="0 0 200 40" preserveAspectRatio="none"><path d="M0 20 Q25 5 50 20 T100 20 T150 20 T200 20 V40 H0 Z" fill="rgba(143,224,242,.14)"/><path d="M0 28 Q25 15 50 28 T100 28 T150 28 T200 28 V40 H0 Z" fill="rgba(143,224,242,.22)"/></svg>` : '';
       const bambooLayer = tier.bamboo ? `<div class="rating-card-bamboo"><span></span><span></span><span></span><span></span><span></span></div>` : '';
-      html += `<div class="rating-card" style="background:${tier.grad};border:1px solid ${tier.border};margin-bottom:10px;padding:14px;text-align:left;cursor:pointer" onclick="Ranking.toggleExpand('${esc(r.name).replace(/'/g,"\\'")}')">
+      const subInfo = UI.rankingCategory==='rating'
+        ? `${r.games}戦・平均${(r.avgRank||0).toFixed(2)}位・トップ率${(r.topRate||0).toFixed(0)}%`
+        : `${r.games}戦${ratingInfo?'・R'+ratingInfo.rating.toFixed(0):''}`;
+      html += `<div class="rating-card" style="background:${tier.grad};border:1px solid ${tier.border};margin-bottom:10px;padding:${isTop3?'18px':'14px'};text-align:left;cursor:pointer" onclick="Ranking.toggleExpand('${esc(r.name).replace(/'/g,"\\'")}')">
         ${bambooLayer}${waveLayer}
-        <div class="rating-card-icon">${tier.icon}</div>
+        <div class="rating-card-icon" style="${isTop3?'font-size:74px':''}">${tier.icon}</div>
         <div class="rating-card-shine"></div>
         <div style="position:relative;z-index:1">
           <div class="row" style="justify-content:space-between;align-items:center">
             <div class="row" style="align-items:center;gap:10px">
-              <div style="width:20px;text-align:center;font-weight:800;color:${tier.valueColor}">${idx+1}</div>
-              <div style="font-weight:700;color:${tier.text}">${esc(r.name)}</div>
+              <div style="width:22px;text-align:center;font-weight:800;color:${tier.valueColor};font-size:${isTop3?'17px':'14px'}">${idx+1}</div>
+              <div style="font-weight:700;color:${tier.text};font-size:${isTop3?'19px':'14px'}">${esc(r.name)}</div>
             </div>
-            <div style="font-weight:800;font-size:19px;color:${tier.valueColor}">${r.rating.toFixed(1)}</div>
+            <div style="font-weight:800;font-size:${isTop3?'23px':'19px'};color:${tier.valueColor}">${valueFormat(r.value!==undefined?r.value:r.rating)}</div>
           </div>
           <div class="row" style="justify-content:space-between;align-items:center;margin-top:8px">
-            <span style="font-size:11.5px;color:${tier.sub}">${r.games}戦・平均${r.avgRank.toFixed(2)}位・トップ率${r.topRate.toFixed(0)}%</span>
+            <span style="font-size:11.5px;color:${tier.sub}">${subInfo}</span>
             <span style="font-size:11.5px;font-weight:700;color:${tier.text};background:${tier.badgeBg};padding:2px 9px;border-radius:12px">${tier.title}</span>
           </div>
           ${expanded?renderRankingDetail(r.name, tier):''}
@@ -2568,8 +2713,11 @@ function renderRanking(){
 }
 const Ranking = {
   setPlayerCount(pc){ UI.rankingPlayerCount=pc; UI.rankingExpandedName=null; render(); },
+  setScope(scope){ UI.rankingScope=scope; UI.rankingExpandedName=null; render(); },
+  setMonth(month){ UI.rankingMonth=month; render(); },
+  setCategory(cat){ UI.rankingCategory=cat; UI.rankingExpandedName=null; render(); },
   toggleExpand(name){ UI.rankingExpandedName = (UI.rankingExpandedName===name) ? null : name; render(); },
-  reload(){ UI.rankingData=null; UI.rankingError=null; render(); },
+  reload(){ UI.rankingData=null; UI.rankingSettlementData=null; UI.rankingError=null; render(); },
   updateAliasForm(key,val){
     UI.adminAliasForm = UI.adminAliasForm || { from:'', to:'' };
     UI.adminAliasForm[key]=val;
@@ -2945,12 +3093,15 @@ const Settings = {
   async backfillGlobalRanking(){
     if(!fbAuth || !currentUser){ renderInfoModal('ログインが必要です','ランキングへの反映にはログインが必要です。'); return; }
     const targets = DB.history.filter(s=>!s.globalId);
-    if(targets.length===0){ renderInfoModal('反映済みです','未反映の過去対局はありませんでした。'); return; }
-    showConfirmModal('過去の対局をランキングに反映しますか？', `未反映の対局が${targets.length}件あります。すべてにIDを発行し、共有ランキングに送信します。`, ()=>{
+    const settlementTargets = DB.settlements.filter(s=>!s.globalId);
+    if(targets.length===0 && settlementTargets.length===0){ renderInfoModal('反映済みです','未反映の過去データはありませんでした。'); return; }
+    showConfirmModal('過去のデータをランキングに反映しますか？', `未反映の対局が${targets.length}件、精算表が${settlementTargets.length}件あります。すべてにIDを発行し、共有ランキングに送信します。`, ()=>{
       targets.forEach(s=>{ s.globalId = uid(); });
-      persist('history');
+      settlementTargets.forEach(s=>{ s.globalId = uid(); });
+      persist('history'); persist('settlements');
       targets.forEach(s=>{ const rule = getRule(s.ruleId); pushSessionToGlobalRanking(s, rule); });
-      renderInfoModal('反映しました', `${targets.length}件の過去対局をランキングに反映しました。`);
+      settlementTargets.forEach(s=>{ const rule = getRule(s.ruleId); pushSettlementToGlobalRanking(s, rule); });
+      renderInfoModal('反映しました', `対局${targets.length}件・精算表${settlementTargets.length}件を反映しました。`);
     }, '反映する');
   },
 
