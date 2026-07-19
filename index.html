@@ -2602,11 +2602,13 @@ function renderRanking(){
     <div class="ms-opt ${UI.rankingPlayerCount===3?'active':''}" onclick="Ranking.setPlayerCount(3)">3人打ち</div>
     <div class="ms-opt ${UI.rankingPlayerCount===4?'active':''}" onclick="Ranking.setPlayerCount(4)">4人打ち</div>
   </div>
+  ${UI.rankingCategory!=='rating' ? `
   <div class="mode-switch" style="margin-top:8px">
     <div class="ms-opt ${UI.rankingScope==='all'?'active':''}" onclick="Ranking.setScope('all')">総合ランキング</div>
     <div class="ms-opt ${UI.rankingScope==='month'?'active':''}" onclick="Ranking.setScope('month')">月間ランキング</div>
   </div>
   ${UI.rankingScope==='month'?`<input type="month" value="${UI.rankingMonth}" style="margin-top:8px" onchange="Ranking.setMonth(this.value)">`:''}
+  ` : ''}
   <div class="row wrap" style="gap:6px;margin-top:10px">
     ${[['rating','雀力王'],['score','素点王'],['chip','チップ王'],['lastavoid','鉄壁王'],['money','大富豪']].map(([key,label])=>
       `<div class="chip ${UI.rankingCategory===key?'selected':''}" onclick="Ranking.setCategory('${key}')">${label}</div>`
@@ -2730,7 +2732,7 @@ const Ranking = {
   setPlayerCount(pc){ UI.rankingPlayerCount=pc; UI.rankingExpandedName=null; render(); },
   setScope(scope){ UI.rankingScope=scope; UI.rankingExpandedName=null; render(); },
   setMonth(month){ UI.rankingMonth=month; render(); },
-  setCategory(cat){ UI.rankingCategory=cat; UI.rankingExpandedName=null; render(); },
+  setCategory(cat){ UI.rankingCategory=cat; UI.rankingExpandedName=null; if(cat==='rating') UI.rankingScope='all'; render(); },
   toggleExpand(name){ UI.rankingExpandedName = (UI.rankingExpandedName===name) ? null : name; render(); },
   reload(){ UI.rankingData=null; UI.rankingSettlementData=null; UI.rankingError=null; render(); },
   updateAliasForm(key,val){
