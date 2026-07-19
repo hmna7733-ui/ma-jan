@@ -464,11 +464,13 @@ function queueCloudPush(immediate=false){
    上書きするだけなので、自動的に重複が排除される。ベストエフォート（失敗しても無視）。 */
 function pushSessionToGlobalRanking(session, rule){
   if(!fbAuth || !currentUser || !session.globalId) return;
+  const linkedSettlement = session.settlementId ? DB.settlements.find(x=>x.id===session.settlementId) : null;
   const payload = {
     date: session.date,
     ruleName: rule ? rule.name : '',
     playerCount: rule ? rule.playerCount : session.players.length,
     players: session.players.map(p=>({ name: memberName(p.memberId), rawScore:p.rawScore, rank:p.rank, point:p.point })),
+    settlementGlobalId: linkedSettlement ? (linkedSettlement.globalId || null) : null,
     contributedBy: currentUser.uid,
     updatedAt: firebase.firestore.FieldValue.serverTimestamp()
   };
@@ -493,16 +495,26 @@ function pushSettlementToGlobalRanking(settlement, rule){
       moneyTotal: scoreYen + chipYen
     };
   });
+  const sessionGlobalIds = (settlement.sessionIds||[])
+    .map(sid=>{ const s=DB.history.find(h=>h.id===sid); return s ? s.globalId : null; })
+    .filter(Boolean);
   const payload = {
     date: settlement.date,
     ruleName: rule ? rule.name : '',
     playerCount: rule ? rule.playerCount : (settlement.memberIds||[]).length,
     perMemberByName,
+    creatorName: settlement.creatorName || null,
     contributedBy: currentUser.uid,
+    sessionGlobalIds,
     updatedAt: firebase.firestore.FieldValue.serverTimestamp()
   };
   fbDb.collection('mahjong_global_settlements').doc(settlement.globalId).set(payload)
     .catch(e=>console.error('global settlement ranking push error', e));
+  // 対局側にも、どの精算表に属しているかを分かるように書き戻しておく（管理者削除時の連動用）
+  sessionGlobalIds.forEach(gid=>{
+    fbDb.collection('mahjong_global_games').doc(gid).set({ settlementGlobalId: settlement.globalId }, { merge:true })
+      .catch(e=>console.error('game settlement link error', e));
+  });
 }
 
 /* ============ 管理者機能 ============
@@ -2685,9 +2697,14 @@ function renderRanking(){
   if(UI.isAdmin){
     const allNames = Array.from(new Set((UI.rankingData||[]).flatMap(g=>(g.players||[]).map(p=>p.name)))).sort();
     UI.adminAliasForm = UI.adminAliasForm || { from:'', to:'' };
+    const adminCollapsed = isSectionCollapsed('adminPanel');
     html += `<div class="card" style="border:1.5px solid var(--gold);background:linear-gradient(180deg,#fffaf0,#fdf3d8)">
-      <h3>🛡 管理者機能</h3>
-      <div class="small-note" style="margin-bottom:10px">この機能は管理者権限を持つアカウントにのみ表示されています。ここで行った名前の統合は、ランキングを見る全アカウントに反映されます。</div>
+      <div class="row" style="justify-content:space-between;align-items:center;cursor:pointer" onclick="toggleSectionCollapse('adminPanel')">
+        <h3 style="margin-bottom:0">🛡 管理者機能</h3>
+        <span style="font-size:18px">${adminCollapsed?'▸':'▾'}</span>
+      </div>`;
+    if(!adminCollapsed){
+      html += `<div class="small-note" style="margin:10px 0">この機能は管理者権限を持つアカウントにのみ表示されています。ここで行った名前の統合は、ランキングを見る全アカウントに反映され、統合先と同じ名前のメンバーがこのアカウントにいれば、そのメンバーの別名にも自動で追加されます。</div>
       <div class="field-wrap"><label class="field">統合する名前（この名前を→に変える）</label>
         <select onchange="Ranking.updateAliasForm('from', this.value)">
           <option value="">選択してください</option>
@@ -2708,15 +2725,77 @@ function renderRanking(){
           <span class="small-note">${esc(from)} → ${esc(to)}</span>
           <button class="btn sm danger" onclick="Ranking.removeAlias('${esc(from).replace(/'/g,"&#39;")}')">解除</button>
         </div>`).join('')}` : ''}
-      <div class="section-title">全対局データ（${(UI.rankingData||[]).length}件）</div>
-      <div class="small-note" style="margin-bottom:8px">個別の対局データを直接削除できます（編集を反映するには、該当データを一度削除してから該当アカウントで保存し直してもらってください）。</div>
-      ${(UI.rankingData||[]).slice().sort((a,b)=>(b.date||'').localeCompare(a.date||'')).slice(0,50).map(g=>`
-        <div class="row" style="justify-content:space-between;align-items:center;padding:7px 0;border-bottom:1px solid var(--border);font-size:12px">
-          <span>${esc(g.date||'')} ・ ${esc(g.ruleName||'')} ・ ${(g.players||[]).map(p=>esc(p.name)+p.rank+'位').join('・')}</span>
-          <button class="btn sm danger" onclick="Ranking.deleteGlobalGame('${g.id}')">削除</button>
-        </div>`).join('')}
-      ${(UI.rankingData||[]).length>50?`<div class="small-note" style="margin-top:6px">先頭50件のみ表示しています。</div>`:''}
-    </div>`;
+
+      ${(()=>{
+        const stCollapsed = isSectionCollapsed('adminSettlements');
+        const settlements = (UI.rankingSettlementData||[]).slice().sort((a,b)=>(b.date||'').localeCompare(a.date||''));
+        const groupByCreator = UI.adminSettlementGroupByCreator;
+        let inner = `<div class="row" style="justify-content:space-between;align-items:center;cursor:pointer;margin-top:14px" onclick="toggleSectionCollapse('adminSettlements')">
+          <div class="section-title" style="margin:0">全精算書（${settlements.length}件）</div>
+          <span style="font-size:16px">${stCollapsed?'▸':'▾'}</span>
+        </div>`;
+        if(!stCollapsed){
+          inner += `<div class="row" style="gap:8px;margin:8px 0">
+            <button class="btn sm secondary" onclick="Ranking.setAdminSettlementGrouping(false)">${!groupByCreator?'✓ ':''}精算書別</button>
+            <button class="btn sm secondary" onclick="Ranking.setAdminSettlementGrouping(true)">${groupByCreator?'✓ ':''}製作者別</button>
+          </div>`;
+          const renderSettlementRow = (st)=>{
+            const expanded = UI.adminExpandedSettlementId===st.id;
+            const names = Object.keys(st.perMemberByName||{});
+            return `<div style="padding:7px 0;border-bottom:1px solid var(--border);font-size:12px">
+              <div class="row" style="justify-content:space-between;align-items:center;cursor:pointer" onclick="Ranking.toggleAdminSettlementExpand('${st.id}')">
+                <span>${esc(st.date||'')} ・ ${esc(st.ruleName||'')} ・ ${names.map(esc).join('・')}</span>
+                <button class="btn sm danger" onclick="event.stopPropagation();Ranking.deleteGlobalSettlement('${st.id}')">削除</button>
+              </div>
+              ${expanded?`<div class="small-note" style="margin-top:6px">
+                作成者: ${esc(st.creatorName||'不明')}<br>
+                ${names.map(n=>{ const v=st.perMemberByName[n]||{}; return `${esc(n)}：スコア${sign(Math.round((v.scorePoint||0)*10)/10)}・チップ${sign(v.chipCount||0)}枚・収支${sign(Math.round(v.moneyTotal||0))}P`; }).join('<br>')}
+              </div>`:''}
+            </div>`;
+          };
+          if(groupByCreator){
+            const byCreator = {};
+            settlements.forEach(st=>{ const c=st.creatorName||'不明'; (byCreator[c]=byCreator[c]||[]).push(st); });
+            Object.keys(byCreator).sort().forEach(creator=>{
+              inner += `<div style="font-weight:700;font-size:12.5px;margin-top:8px">${esc(creator)}（${byCreator[creator].length}件）</div>`;
+              byCreator[creator].slice(0,50).forEach(st=>{ inner += renderSettlementRow(st); });
+            });
+          } else {
+            settlements.slice(0,50).forEach(st=>{ inner += renderSettlementRow(st); });
+          }
+          if(settlements.length>50) inner += `<div class="small-note" style="margin-top:6px">先頭50件のみ表示しています。</div>`;
+        }
+        return inner;
+      })()}
+
+      ${(()=>{
+        const gCollapsed = isSectionCollapsed('adminGames');
+        const games = (UI.rankingData||[]).slice().sort((a,b)=>(b.date||'').localeCompare(a.date||''));
+        let inner = `<div class="row" style="justify-content:space-between;align-items:center;cursor:pointer;margin-top:14px" onclick="toggleSectionCollapse('adminGames')">
+          <div class="section-title" style="margin:0">全対局データ（${games.length}件）</div>
+          <span style="font-size:16px">${gCollapsed?'▸':'▾'}</span>
+        </div>`;
+        if(!gCollapsed){
+          inner += `<div class="small-note" style="margin:8px 0">タップすると内容を確認できます。削除すると元に戻せません。</div>`;
+          games.slice(0,50).forEach(g=>{
+            const expanded = UI.adminExpandedGameId===g.id;
+            inner += `<div style="padding:7px 0;border-bottom:1px solid var(--border);font-size:12px">
+              <div class="row" style="justify-content:space-between;align-items:center;cursor:pointer" onclick="Ranking.toggleAdminGameExpand('${g.id}')">
+                <span>${esc(g.date||'')} ・ ${esc(g.ruleName||'')} ・ ${(g.players||[]).map(p=>esc(p.name)+p.rank+'位').join('・')}</span>
+                <button class="btn sm danger" onclick="event.stopPropagation();Ranking.deleteGlobalGame('${g.id}')">削除</button>
+              </div>
+              ${expanded?`<div class="small-note" style="margin-top:6px">
+                ${(g.players||[]).map(p=>`${esc(p.name)}：${p.rawScore}点・${p.rank}位・${sign(p.point)}`).join('<br>')}
+              </div>`:''}
+            </div>`;
+          });
+          if(games.length>50) inner += `<div class="small-note" style="margin-top:6px">先頭50件のみ表示しています。</div>`;
+        }
+        return inner;
+      })()}
+      `;
+    }
+    html += `</div>`;
   }
 
   html += `<div class="card"><div class="small-note">アプリを使っている全アカウントの対局データ（同じ対局の重複は自動で除外）をもとに集計しています。名前が完全一致する人同士でまとめて集計されるため、表記ゆれがあると別人として分かれて表示されることがあります。</div></div>`;
@@ -2739,6 +2818,15 @@ const Ranking = {
     if(!f || !f.from || !f.to || f.from===f.to){ renderInfoModal('入力が足りません','統合する名前と統合先の名前（別々）を選んでください。'); return; }
     try{
       await fbDb.collection('mahjong_global_name_aliases').doc(f.from).set({ canonicalName:f.to });
+      // ローカルのメンバー管理とも連動：統合先と同名のメンバーがいれば、その別名リストにも追加する
+      const localMember = DB.members.find(m=>m.name===f.to);
+      if(localMember){
+        localMember.aliases = localMember.aliases || [];
+        if(!localMember.aliases.includes(f.from) && f.from!==localMember.name){
+          localMember.aliases.push(f.from);
+          persist('members');
+        }
+      }
       UI.adminAliasForm = { from:'', to:'' };
       await loadRankingData();
     }catch(e){ renderInfoModal('保存に失敗しました', firestoreErrorMessage(e, 'mahjong_global_name_aliases')); }
@@ -2750,13 +2838,38 @@ const Ranking = {
     }catch(e){ renderInfoModal('削除に失敗しました', firestoreErrorMessage(e, 'mahjong_global_name_aliases')); }
   },
   deleteGlobalGame(id){
-    showConfirmModal('この対局データを削除しますか？', '全アカウント共有のランキングデータから削除されます。この操作は元に戻せません。', async ()=>{
+    const game = (UI.rankingData||[]).find(g=>g.id===id);
+    const linkedSettlementId = game ? game.settlementGlobalId : null;
+    const note = linkedSettlementId ? '\nこの対局に紐づく精算書（チップ王・大富豪の集計データ）も合わせて削除されます。' : '';
+    showConfirmModal('この対局データを削除しますか？', '全アカウント共有のランキングデータから削除されます。この操作は元に戻せません。'+note, async ()=>{
       try{
         await fbDb.collection('mahjong_global_games').doc(id).delete();
+        if(linkedSettlementId){
+          try{ await fbDb.collection('mahjong_global_settlements').doc(linkedSettlementId).delete(); }
+          catch(e){ console.error('linked settlement delete error', e); }
+        }
         await loadRankingData();
       }catch(e){ renderInfoModal('削除に失敗しました', firestoreErrorMessage(e, 'mahjong_global_games')); }
     }, '削除する');
-  }
+  },
+  deleteGlobalSettlement(id){
+    const st = (UI.rankingSettlementData||[]).find(x=>x.id===id);
+    const linkedGameIds = (st && st.sessionGlobalIds) || [];
+    const note = linkedGameIds.length ? `\nこの精算書に含まれる対局データ${linkedGameIds.length}件も、素点王・鉄壁王などのランキングから合わせて削除されます。` : '';
+    showConfirmModal('この精算書データを削除しますか？', '全アカウント共有のランキングデータから削除されます。この操作は元に戻せません。'+note, async ()=>{
+      try{
+        await fbDb.collection('mahjong_global_settlements').doc(id).delete();
+        for(const gid of linkedGameIds){
+          try{ await fbDb.collection('mahjong_global_games').doc(gid).delete(); }
+          catch(e){ console.error('linked game delete error', e); }
+        }
+        await loadRankingData();
+      }catch(e){ renderInfoModal('削除に失敗しました', firestoreErrorMessage(e, 'mahjong_global_settlements')); }
+    }, '削除する');
+  },
+  toggleAdminGameExpand(id){ UI.adminExpandedGameId = (UI.adminExpandedGameId===id) ? null : id; render(); },
+  toggleAdminSettlementExpand(id){ UI.adminExpandedSettlementId = (UI.adminExpandedSettlementId===id) ? null : id; render(); },
+  setAdminSettlementGrouping(byCreator){ UI.adminSettlementGroupByCreator = byCreator; render(); }
 };
 
 function renderAnalysis(){
