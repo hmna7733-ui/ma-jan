@@ -1855,6 +1855,58 @@ function gamesForMember(memberId, pcFilter){
   });
 }
 
+/* ============ レーティング（天鳳R式） ============
+   R_new = R_old + K × ( S + (卓の平均R − R_old) / 100 )
+   K = 試合数<400 なら 1-試合数×0.002、400以上なら0.2
+   S(4人打ち) = 1位+30 / 2位+10 / 3位-10 / 4位-30
+   S(3人打ち) = 1位+40 / 2位0 / 3位-40
+   卓の平均Rは自分を含めた全員の平均。初期値は全員1500。
+   人数（3人打ち/4人打ち）ごとに完全に別のレーティングとして管理する。 */
+function simulateRatings(playerCount){
+  const games = DB.history
+    .filter(s=>{ const r=getRule(s.ruleId); return r && r.playerCount===playerCount; })
+    .slice()
+    .sort((a,b)=> a.date.localeCompare(b.date));
+  const ratings = {}, gameCounts = {};
+  const ensure = (mid)=>{ if(ratings[mid]===undefined){ ratings[mid]=1500; gameCounts[mid]=0; } };
+  const sTable = playerCount===3 ? {1:40,2:0,3:-40} : {1:30,2:10,3:-10,4:-30};
+  games.forEach(g=>{
+    g.players.forEach(p=>ensure(p.memberId));
+    const rAvg = g.players.reduce((a,p)=>a+ratings[p.memberId],0)/g.players.length;
+    const updates = {};
+    g.players.forEach(p=>{
+      const gc = gameCounts[p.memberId];
+      const K = gc<400 ? (1-gc*0.002) : 0.2;
+      const S = sTable[p.rank] || 0;
+      const rOld = ratings[p.memberId];
+      updates[p.memberId] = rOld + K*(S + (rAvg-rOld)/100);
+    });
+    g.players.forEach(p=>{
+      ratings[p.memberId] = updates[p.memberId];
+      gameCounts[p.memberId]++;
+    });
+  });
+  return ratings;
+}
+function getMemberRating(memberId, playerCount){
+  const ratings = simulateRatings(playerCount);
+  return ratings[memberId]!==undefined ? ratings[memberId] : 1500;
+}
+function ratingTitle(r){
+  if(r>=2000) return '天鳳位';
+  if(r>=1800) return '玄人（上級者）';
+  if(r>=1650) return '雀士（中級者）';
+  if(r>=1500) return '見習い（一般人）';
+  return '新緑（初心者）';
+}
+function ratingCardHtml(r, playerCount){
+  return `<div class="grow" style="text-align:center;background:linear-gradient(180deg,var(--accent),var(--accent2));border-radius:14px;padding:14px 10px;color:#fff">
+    <div style="font-size:11px;opacity:.85">${playerCount}人打ちレート</div>
+    <div style="font-size:26px;font-weight:800;margin:2px 0">${r.toFixed(1)}</div>
+    <div style="font-size:12px;font-weight:700">${ratingTitle(r)}</div>
+  </div>`;
+}
+
 function computeStats(memberId, pcFilter){
   pcFilter = pcFilter || 'all';
   const games = gamesForMember(memberId, pcFilter);
@@ -2258,7 +2310,14 @@ function renderAnalysis(){
     else {
       const s3all = pcFilter==='all' ? computeStats(UI.analysisMemberId, 3) : null;
       const s4all = pcFilter==='all' ? computeStats(UI.analysisMemberId, 4) : null;
+      const ratingHtml = pcFilter==='all'
+        ? `<div class="row" style="gap:10px;margin-bottom:14px">
+            ${s3all?ratingCardHtml(getMemberRating(UI.analysisMemberId,3),3):''}
+            ${s4all?ratingCardHtml(getMemberRating(UI.analysisMemberId,4),4):''}
+          </div>`
+        : `<div class="row" style="margin-bottom:14px">${ratingCardHtml(getMemberRating(UI.analysisMemberId,pcFilter),pcFilter)}</div>`;
       html+=`<div class="card"><h3>${avatarHtml(m.id,26)} ${esc(m.name)} の通算成績</h3>
+        ${ratingHtml}
         <div class="stat-grid">
           <div class="stat-box"><div class="v">${s.n}</div><div class="l">総対局数</div></div>
           ${pcFilter==='all' ? `
