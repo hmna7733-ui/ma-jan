@@ -2243,7 +2243,15 @@ function renderAnalysis(){
           <div class="stat-box"><div class="v">${s.n}</div><div class="l">総対局数</div></div>
           ${pcFilter==='all' ? `
           <div class="stat-box"><div class="v ${c.chipCount>0?'pos':c.chipCount<0?'neg':''}">${sign(c.chipCount)}</div><div class="l">通算チップ枚数</div></div>
-          <div class="stat-box" style="background:linear-gradient(180deg,#fff3e6,#ffdfb8)"><div class="v" style="color:#b5651d">${sign(Math.round(s.totalPoint*10)/10)}</div><div class="l">通算スコア</div></div>
+          <div class="stat-box" style="grid-column:span 3;background:linear-gradient(180deg,#fff3e6,#ffdfb8)"><div class="v" style="color:#b5651d">${sign(Math.round(s.totalPoint*10)/10)}</div><div class="l">通算スコア</div></div>
+          <div class="stat-box" style="grid-column:span 3;background:linear-gradient(180deg,#fff9df,#f8e8a8)"><div class="v" style="color:#8a6d1d">${sign(Math.round(c.moneyTotal))}P</div><div class="l">通算収支（精算より）</div></div>
+          ` : pcFilter===4 ? `
+          <div class="stat-box"><div class="v">${s.avgRank.toFixed(2)}</div><div class="l">平均順位</div></div>
+          <div class="stat-box"><div class="v ${c.chipCount>0?'pos':c.chipCount<0?'neg':''}">${sign(c.chipCount)}</div><div class="l">通算チップ枚数</div></div>
+          <div class="stat-box" style="background:linear-gradient(180deg,#e8f1fc,#cfe3fa)"><div class="v" style="color:#2a5d9f">${s.topRate.toFixed(0)}%</div><div class="l">トップ率</div></div>
+          <div class="stat-box"><div class="v">${s.rentaiRate.toFixed(0)}%</div><div class="l">連対率</div></div>
+          <div class="stat-box" style="background:linear-gradient(180deg,#fdecea,#f6d2ce)"><div class="v" style="color:#b23b2e">${s.lastRate.toFixed(0)}%</div><div class="l">ラス率</div></div>
+          <div class="stat-box" style="grid-column:span 3;background:linear-gradient(180deg,#fff3e6,#ffdfb8)"><div class="v" style="color:#b5651d">${sign(Math.round(s.totalPoint*10)/10)}</div><div class="l">通算スコア</div></div>
           <div class="stat-box" style="grid-column:span 3;background:linear-gradient(180deg,#fff9df,#f8e8a8)"><div class="v" style="color:#8a6d1d">${sign(Math.round(c.moneyTotal))}P</div><div class="l">通算収支（精算より）</div></div>
           ` : `
           <div class="stat-box"><div class="v">${s.avgRank.toFixed(2)}</div><div class="l">平均順位</div></div>
@@ -2254,13 +2262,22 @@ function renderAnalysis(){
           <div class="stat-box" style="grid-column:span 3;background:linear-gradient(180deg,#fff9df,#f8e8a8)"><div class="v" style="color:#8a6d1d">${sign(Math.round(c.moneyTotal))}P</div><div class="l">通算収支（精算より）</div></div>
           `}
         </div>
-        ${pcFilter!=='all' ? `
+        ${pcFilter==='all' ? (()=>{
+          const s3 = computeStats(UI.analysisMemberId, 3);
+          const s4 = computeStats(UI.analysisMemberId, 4);
+          if(!s3 && !s4) return '';
+          return `<div class="section-title">着順の割合</div>
+          <div class="row wrap" style="gap:24px">
+            ${s3?`<div><div class="small-note" style="margin-bottom:4px">3人打ち</div>${pieChartHtml(s3.rankCount, s3.n, s3.maxRank, 90)}</div>`:''}
+            ${s4?`<div><div class="small-note" style="margin-bottom:4px">4人打ち</div>${pieChartHtml(s4.rankCount, s4.n, s4.maxRank, 90)}</div>`:''}
+          </div>`;
+        })() : `
         <div class="section-title">着順の割合</div>
-        ${pieChartHtml(s.rankCount, s.n, s.maxRank)}
+        ${pieChartHtml(s.rankCount, s.n, s.maxRank)}`}
         <div class="stat-grid" style="margin-top:12px">
           <div class="stat-box"><div class="v">${t.tobashiCount}</div><div class="l">飛ばし回数</div></div>
           <div class="stat-box"><div class="v">${t.bustedCount}</div><div class="l">飛ばされた回数（箱下）</div></div>
-        </div>` : ''}
+        </div>
       </div>`;
 
       const ruleRows = computeRuleBreakdown(UI.analysisMemberId, pcFilter);
@@ -2276,10 +2293,14 @@ function renderAnalysis(){
 
       const opp=computeHeadToHead(UI.analysisMemberId,pcFilter);
       const oppEntries=Object.entries(opp);
+      const opp3 = pcFilter==='all' ? computeHeadToHead(UI.analysisMemberId,3) : null;
+      const opp4 = pcFilter==='all' ? computeHeadToHead(UI.analysisMemberId,4) : null;
       if(oppEntries.length){
         html+=`<div class="card"><h3>対戦相手別 成績</h3></div>`;
         oppEntries.sort((a,b)=>b[1].scoreDiff-a[1].scoreDiff).forEach(([oid,o])=>{
           const expanded = UI.expandedOpponentId===oid;
+          const o3 = opp3 ? opp3[oid] : null;
+          const o4 = opp4 ? opp4[oid] : null;
           html+=`<div class="card" style="padding:14px 16px">
             <div class="row" style="justify-content:space-between;align-items:center;cursor:pointer" onclick="Analysis.toggleOpponentExpand('${oid}')">
               <div class="nm">${avatarHtml(oid,26)} ${esc(memberName(oid))}</div>
@@ -2291,19 +2312,33 @@ function renderAnalysis(){
             ${expanded?`
               <div class="stat-grid" style="margin-top:12px">
                 <div class="stat-box"><div class="v">${o.games}</div><div class="l">対局数</div></div>
-                ${pcFilter==='all' ? '' : (pcFilter===4?
-                  `<div class="stat-box"><div class="v" style="font-size:15px">${(o.rankCounts.slice(0,4).join('-'))}</div><div class="l">1-2-3-4着</div></div>`
-                  :`<div class="stat-box"><div class="v">${o.win}-${o.lose}-${o.draw}</div><div class="l">勝-負-分</div></div>
-                <div class="stat-box"><div class="v">${sign(o.chipDiff)}枚</div><div class="l">チップ差（3人打ち）</div></div>`)}
-                ${pcFilter!=='all' ? `
-                <div class="stat-box" style="background:linear-gradient(180deg,#e8f1fc,#cfe3fa)"><div class="v" style="color:#2a5d9f">${o.games?Math.round((o.rankCounts[0]||0)/o.games*100):0}%</div><div class="l">トップ率</div></div>
-                <div class="stat-box" style="background:linear-gradient(180deg,#fdecea,#f6d2ce)"><div class="v" style="color:#b23b2e">${(o.games&&o.maxRank)?Math.round((o.rankCounts[o.maxRank-1]||0)/o.games*100):0}%</div><div class="l">ラス率</div></div>` : ''}
+                ${pcFilter==='all' ? `
                 <div class="stat-box" style="background:linear-gradient(180deg,#fff3e6,#ffdfb8)"><div class="v" style="color:#b5651d">${sign(Math.round(o.scoreDiff*10)/10)}</div><div class="l">スコア差</div></div>
                 <div class="stat-box" style="grid-column:span 3;background:linear-gradient(180deg,#fff9df,#f8e8a8)"><div class="v" style="color:#8a6d1d">${sign(Math.round(o.moneyDiff))}P</div><div class="l">ポイント差</div></div>
+                ` : pcFilter===4 ? `
+                <div class="stat-box"><div class="v" style="font-size:15px">${(o.rankCounts.slice(0,4).join('-'))}</div><div class="l">1-2-3-4着</div></div>
+                <div class="stat-box" style="background:linear-gradient(180deg,#fff3e6,#ffdfb8)"><div class="v" style="color:#b5651d">${sign(Math.round(o.scoreDiff*10)/10)}</div><div class="l">スコア差</div></div>
+                <div class="stat-box" style="background:linear-gradient(180deg,#e8f1fc,#cfe3fa)"><div class="v" style="color:#2a5d9f">${o.games?Math.round((o.rankCounts[0]||0)/o.games*100):0}%</div><div class="l">トップ率</div></div>
+                <div class="stat-box"><div class="v">${o.games?Math.round(((o.rankCounts[0]||0)+(o.rankCounts[1]||0))/o.games*100):0}%</div><div class="l">連対率</div></div>
+                <div class="stat-box" style="background:linear-gradient(180deg,#fdecea,#f6d2ce)"><div class="v" style="color:#b23b2e">${(o.games&&o.maxRank)?Math.round((o.rankCounts[o.maxRank-1]||0)/o.games*100):0}%</div><div class="l">ラス率</div></div>
+                <div class="stat-box" style="grid-column:span 3;background:linear-gradient(180deg,#fff9df,#f8e8a8)"><div class="v" style="color:#8a6d1d">${sign(Math.round(o.moneyDiff))}P</div><div class="l">ポイント差</div></div>
+                ` : `
+                <div class="stat-box"><div class="v">${o.win}-${o.lose}-${o.draw}</div><div class="l">勝-負-分</div></div>
+                <div class="stat-box"><div class="v">${sign(o.chipDiff)}枚</div><div class="l">チップ差（3人打ち）</div></div>
+                <div class="stat-box" style="background:linear-gradient(180deg,#e8f1fc,#cfe3fa)"><div class="v" style="color:#2a5d9f">${o.games?Math.round((o.rankCounts[0]||0)/o.games*100):0}%</div><div class="l">トップ率</div></div>
+                <div class="stat-box" style="background:linear-gradient(180deg,#fdecea,#f6d2ce)"><div class="v" style="color:#b23b2e">${(o.games&&o.maxRank)?Math.round((o.rankCounts[o.maxRank-1]||0)/o.games*100):0}%</div><div class="l">ラス率</div></div>
+                <div class="stat-box" style="background:linear-gradient(180deg,#fff3e6,#ffdfb8)"><div class="v" style="color:#b5651d">${sign(Math.round(o.scoreDiff*10)/10)}</div><div class="l">スコア差</div></div>
+                <div class="stat-box" style="grid-column:span 3;background:linear-gradient(180deg,#fff9df,#f8e8a8)"><div class="v" style="color:#8a6d1d">${sign(Math.round(o.moneyDiff))}P</div><div class="l">ポイント差</div></div>
+                `}
               </div>
-              ${pcFilter!=='all' ? `
+              ${pcFilter==='all' ? ((o3&&o3.maxRank)||(o4&&o4.maxRank) ? `
               <div class="section-title">この相手との着順の割合</div>
-              ${o.maxRank?pieChartHtml(o.rankCounts, o.games, o.maxRank, 96):''}` : ''}
+              <div class="row wrap" style="gap:24px">
+                ${(o3&&o3.maxRank)?`<div><div class="small-note" style="margin-bottom:4px">3人打ち</div>${pieChartHtml(o3.rankCounts, o3.games, o3.maxRank, 80)}</div>`:''}
+                ${(o4&&o4.maxRank)?`<div><div class="small-note" style="margin-bottom:4px">4人打ち</div>${pieChartHtml(o4.rankCounts, o4.games, o4.maxRank, 80)}</div>`:''}
+              </div>` : '') : `
+              <div class="section-title">この相手との着順の割合</div>
+              ${o.maxRank?pieChartHtml(o.rankCounts, o.games, o.maxRank, 96):''}`}
               <div class="stat-grid" style="margin-top:12px">
                 <div class="stat-box"><div class="v">${o.tobashiFromCount}</div><div class="l">飛ばした回数</div></div>
                 <div class="stat-box"><div class="v">${o.tobashiToCount}</div><div class="l">飛ばされた回数</div></div>
