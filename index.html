@@ -229,6 +229,19 @@ input:focus,select:focus,textarea:focus{outline:none;border-color:var(--accent);
 .mode-switch{display:flex;gap:8px;margin-bottom:14px;background:#f1efe9;padding:4px;border-radius:12px;}
 .mode-switch .ms-opt{flex:1;text-align:center;padding:8px;border-radius:9px;font-size:12.5px;font-weight:700;color:var(--sub);cursor:pointer;}
 .mode-switch .ms-opt.active{background:linear-gradient(180deg,var(--accent),var(--accent2));color:#fff;}
+.rating-card{
+  position:relative;text-align:center;border-radius:16px;padding:16px 10px;
+  overflow:hidden;box-shadow:0 4px 14px -4px rgba(0,0,0,.35), inset 0 1px 0 rgba(255,255,255,.25);
+}
+.rating-card-icon{
+  position:absolute;right:-6px;bottom:-14px;font-size:64px;opacity:.16;
+  transform:rotate(-8deg);pointer-events:none;filter:blur(.2px);
+}
+.rating-card-shine{
+  position:absolute;top:0;left:-60%;width:45%;height:100%;
+  background:linear-gradient(115deg,transparent,rgba(255,255,255,.35),transparent);
+  transform:skewX(-18deg);
+}
 .fab-record{
   position:fixed;right:18px;bottom:calc(96px + env(safe-area-inset-bottom));
   width:60px;height:60px;border-radius:50%;
@@ -1892,18 +1905,24 @@ function getMemberRating(memberId, playerCount){
   const ratings = simulateRatings(playerCount);
   return ratings[memberId]!==undefined ? ratings[memberId] : 1500;
 }
-function ratingTitle(r){
-  if(r>=2000) return '天鳳位';
-  if(r>=1800) return '玄人（上級者）';
-  if(r>=1650) return '雀士（中級者）';
-  if(r>=1500) return '見習い（一般人）';
-  return '新緑（初心者）';
+function ratingTier(r){
+  if(r>=2000) return { title:'天鳳位', grad:'linear-gradient(135deg,#8a6a12 0%,#f0d989 28%,#c9a441 55%,#f7e9b8 78%,#8a6a12 100%)', text:'#3a2905', sub:'rgba(58,41,5,.75)', icon:'👑' };
+  if(r>=1800) return { title:'玄人（上級者）', grad:'linear-gradient(135deg,#2c2560 0%,#5a4bb0 45%,#8b7ae8 70%,#4a3d99 100%)', text:'#ffffff', sub:'rgba(255,255,255,.72)', icon:'🀄' };
+  if(r>=1650) return { title:'雀士（中級者）', grad:'linear-gradient(135deg,#0c4f66 0%,#1d8aa8 45%,#4fc3dd 70%,#136b85 100%)', text:'#ffffff', sub:'rgba(255,255,255,.72)', icon:'🀄' };
+  if(r>=1500) return { title:'見習い（一般人）', grad:'linear-gradient(135deg,#134430 0%,var(--accent2) 45%,var(--accent) 70%,#1c6b47 100%)', text:'#ffffff', sub:'rgba(255,255,255,.72)', icon:'🀄' };
+  return { title:'新緑（初心者）', grad:'linear-gradient(135deg,#3a3a34 0%,#63625a 45%,#8c8b80 70%,#4a4a43 100%)', text:'#ffffff', sub:'rgba(255,255,255,.7)', icon:'🀄' };
 }
+function ratingTitle(r){ return ratingTier(r).title; }
 function ratingCardHtml(r, playerCount){
-  return `<div class="grow" style="text-align:center;background:linear-gradient(180deg,var(--accent),var(--accent2));border-radius:14px;padding:14px 10px;color:#fff">
-    <div style="font-size:11px;opacity:.85">${playerCount}人打ちレート</div>
-    <div style="font-size:26px;font-weight:800;margin:2px 0">${r.toFixed(1)}</div>
-    <div style="font-size:12px;font-weight:700">${ratingTitle(r)}</div>
+  const tier = ratingTier(r);
+  return `<div class="grow rating-card" style="background:${tier.grad}">
+    <div class="rating-card-icon">${tier.icon}</div>
+    <div class="rating-card-shine"></div>
+    <div style="position:relative;z-index:1">
+      <div style="font-size:11px;font-weight:700;color:${tier.sub};letter-spacing:.5px">${playerCount}人打ちレート</div>
+      <div style="font-size:30px;font-weight:800;margin:2px 0;color:${tier.text};text-shadow:0 1px 2px rgba(0,0,0,.15)">${r.toFixed(1)}</div>
+      <div style="font-size:12.5px;font-weight:700;color:${tier.text};background:rgba(0,0,0,.16);display:inline-block;padding:3px 10px;border-radius:20px">${tier.title}</div>
+    </div>
   </div>`;
 }
 
