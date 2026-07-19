@@ -414,6 +414,7 @@ function handleAuthChange(user){
     showApp();
     setSyncDot(true);
     updateAccountNameDisplay();
+    checkIsAdmin().then(v=>{ UI.isAdmin=v; if(UI.tab==='history'||UI.tab==='ranking') render(); });
     _unsubscribeSnapshot = userDocRef().onSnapshot(doc=>{
       if(_isUploading) return;
       if(doc.exists){
@@ -1526,6 +1527,7 @@ function settlementCardHtml(st){
   const expanded = UI.expandedSettlementId===st.id;
   const editingRate = UI.editingSettlementRateId===st.id;
   const sessions = DB.history.filter(h=>st.sessionIds.includes(h.id));
+  const canEdit = !!currentUser && (!st.creatorUid || st.creatorUid===currentUser.uid || UI.isAdmin);
   return `<div class="session-card" style="border-left:4px solid var(--accent)">
     <div class="meta">
       <div class="d">${fmtDate(st.date)} ・ ${esc(rule?rule.name:'(ルール削除済)')} ・ ${memberList}</div>
@@ -1538,17 +1540,18 @@ function settlementCardHtml(st){
       ` : `
         ${rateEnabled?`<span class="small-note">レート: ${rateUsed}P/1000点</span>`:''}
         ${chipEnabled?`<span class="small-note">チップ: ${chipValueUsed}P/枚</span>`:''}
-        ${(rateEnabled||chipEnabled)?`<button class="link-btn" onclick="Settlement.toggleRateEdit('${st.id}')">編集</button>`:''}
+        ${(canEdit && (rateEnabled||chipEnabled))?`<button class="link-btn" onclick="Settlement.toggleRateEdit('${st.id}')">編集</button>`:''}
       `}
     </div>
     <table class="score-board"><thead><tr><th>名前</th><th>スコア</th><th>チップ</th><th>合計</th></tr></thead><tbody>${rows}</tbody></table>
     <div class="actions">
       <button class="btn sm secondary" onclick="Settlement.toggleExpand('${st.id}')">${expanded?'対局履歴を閉じる':'対局履歴を見る（'+sessions.length+'件）'}</button>
-      <button class="btn sm secondary" onclick="Settlement.unlock('${st.id}')">対局を編集</button>
+      ${canEdit?`<button class="btn sm secondary" onclick="Settlement.unlock('${st.id}')">対局を編集</button>`:''}
       <button class="btn sm secondary" onclick="Settlement.share('${st.id}')">🔗 送る</button>
       <button class="btn sm danger" onclick="Settlement.remove('${st.id}')">削除</button>
     </div>
     ${expanded?`<div style="margin-top:10px">${sessions.map(s=>sessionCardHtml(s,true)).join('')}</div>`:''}
+    ${st.creatorName?`<div class="small-note" style="text-align:right;margin-top:8px">作成者: ${esc(st.creatorName)}</div>`:''}
   </div>`;
 }
 
@@ -1732,12 +1735,15 @@ const Settlement = {
     }
     const doConfirm = ()=>{
       const id = uid();
+      const selfMember = DB.members.find(m=>m.isSelf);
       const settlement = {
         id, date:todayStr(), ruleId:rule.id, memberIds:[...UI.home.memberIds],
         sessionIds:sessions.map(s=>s.id), chipTxIds:chipTxToday.map(t=>t.id),
         perMember,
         rateEnabledUsed: rule.rateEnabled, rateUsed: effRule.rate,
         chipEnabledUsed: rule.chipEnabled, chipValueUsed: effRule.chipValue,
+        creatorName: selfMember ? selfMember.name : null,
+        creatorUid: currentUser ? currentUser.uid : null,
         confirmedAt:Date.now()
       };
       DB.settlements.push(settlement);
@@ -1817,7 +1823,8 @@ const Settlement = {
         players: s.players.map(p=>({name:memberName(p.memberId), rawScore:p.rawScore, rank:p.rank, point:p.point}))
       })),
       rateEnabledUsed: st.rateEnabledUsed, rateUsed: st.rateUsed,
-      chipEnabledUsed: st.chipEnabledUsed, chipValueUsed: st.chipValueUsed
+      chipEnabledUsed: st.chipEnabledUsed, chipValueUsed: st.chipValueUsed,
+      creatorName: st.creatorName || null, creatorUid: st.creatorUid || null
     };
     const code = Math.random().toString(36).slice(2,8).toUpperCase();
     try{
@@ -1872,6 +1879,7 @@ const Settlement = {
           perMember,
           rateEnabledUsed: payload.rateEnabledUsed, rateUsed: payload.rateUsed,
           chipEnabledUsed: payload.chipEnabledUsed, chipValueUsed: payload.chipValueUsed,
+          creatorName: payload.creatorName || null, creatorUid: payload.creatorUid || null,
           confirmedAt: Date.now()
         });
         persist('members'); persist('rules'); persist('history'); persist('settlements');
@@ -2417,60 +2425,102 @@ async function loadRankingData(){
   render();
 }
 
+/* 個人の着順分布などグローバル集計での詳細 */
+function computeGlobalPlayerDetail(games, playerCount, aliasMap, targetName){
+  aliasMap = aliasMap || {};
+  const resolveName = (name)=>{
+    let n = name, guard=0;
+    while(aliasMap[n] && aliasMap[n]!==n && guard<5){ n = aliasMap[n]; guard++; }
+    return n;
+  };
+  const filtered = (games||[]).filter(g=>g.playerCount===playerCount && g.players && g.players.length===playerCount);
+  let rankCounts=[0,0,0,0], n=0;
+  filtered.forEach(g=>{
+    const players = g.players.map(p=>({...p, name:resolveName(p.name)}));
+    const me = players.find(p=>p.name===targetName);
+    if(!me) return;
+    n++;
+    rankCounts[me.rank-1] = (rankCounts[me.rank-1]||0)+1;
+  });
+  const maxRank = playerCount;
+  const avgRank = n ? rankCounts.reduce((a,c,i)=>a+(i+1)*c,0)/n : 0;
+  const topRate = n ? (rankCounts[0]||0)/n*100 : 0;
+  const lastRate = n ? (rankCounts[maxRank-1]||0)/n*100 : 0;
+  return { n, rankCounts, maxRank, avgRank, topRate, lastRate };
+}
+function renderRankingDetail(name, tier){
+  const detail = computeGlobalPlayerDetail(UI.rankingData, UI.rankingPlayerCount, UI.rankingAliasMap, name);
+  return `<div style="margin-top:10px;padding-top:10px;border-top:1px solid rgba(255,255,255,.18);color:${tier.text}">
+    <div class="row wrap" style="gap:16px;font-size:12px;color:${tier.sub};margin-bottom:6px">
+      <span>平均順位 ${detail.avgRank.toFixed(2)}</span>
+      <span>ラス率 ${detail.lastRate.toFixed(0)}%</span>
+    </div>
+    ${pieChartHtml(detail.rankCounts, detail.n, detail.maxRank, 78)}
+  </div>`;
+}
+
 function renderRanking(){
-  let html = `<div class="card"><h3>🏆 ランキング</h3>`;
+  let html = '';
   if(!fbAuth || !currentUser){
-    html += `<div class="small-note">ランキングを見るにはログインが必要です。設定→アカウントからログインしてください。</div></div>`;
+    html += `<div class="card"><h3>🏆 ランキング</h3><div class="small-note">ランキングを見るにはログインが必要です。設定→アカウントからログインしてください。</div></div>`;
     document.getElementById('app').innerHTML = html;
     return;
   }
-  html += `<div class="small-note">アプリを使っている全アカウントの対局データ（同じ対局の重複は自動で除外）をもとに集計しています。名前が完全一致する人同士でまとめて集計されるため、表記ゆれがあると別人として分かれて表示されることがあります。</div></div>`;
 
   if(UI.rankingLoading){
-    html += `<div class="card"><div class="small-note">読み込み中…</div></div>`;
+    html += `<div class="card"><h3>🏆 ランキング</h3><div class="small-note">読み込み中…</div></div>`;
     document.getElementById('app').innerHTML = html;
     return;
   }
   if(UI.rankingError){
-    html += `<div class="card"><div class="small-note">${esc(UI.rankingError)}</div><button class="btn sm secondary block" style="margin-top:8px" onclick="Ranking.reload()">再試行</button></div>`;
+    html += `<div class="card"><h3>🏆 ランキング</h3><div class="small-note">${esc(UI.rankingError)}</div><button class="btn sm secondary block" style="margin-top:8px" onclick="Ranking.reload()">再試行</button></div>`;
     document.getElementById('app').innerHTML = html;
     return;
   }
   if(!UI.rankingData){
-    document.getElementById('app').innerHTML = html + `<div class="card"><div class="small-note">読み込み中…</div></div>`;
+    document.getElementById('app').innerHTML = `<div class="card"><h3>🏆 ランキング</h3><div class="small-note">読み込み中…</div></div>`;
     loadRankingData();
     return;
   }
 
+  html += `<div class="card"><h3 style="margin-bottom:10px">🏆 ランキング</h3>`;
   UI.rankingPlayerCount = UI.rankingPlayerCount || 4;
   html += `<div class="mode-switch">
-    <div class="ms-opt ${UI.rankingPlayerCount===4?'active':''}" onclick="Ranking.setPlayerCount(4)">4人打ち</div>
     <div class="ms-opt ${UI.rankingPlayerCount===3?'active':''}" onclick="Ranking.setPlayerCount(3)">3人打ち</div>
-  </div>`;
+    <div class="ms-opt ${UI.rankingPlayerCount===4?'active':''}" onclick="Ranking.setPlayerCount(4)">4人打ち</div>
+  </div></div>`;
 
   const rows = simulateGlobalRatings(UI.rankingData, UI.rankingPlayerCount, UI.rankingAliasMap);
-  html += `<div class="card">`;
   if(rows.length===0){
-    html += `<div class="small-note">まだデータがありません。</div>`;
+    html += `<div class="card"><div class="small-note">まだデータがありません。</div></div>`;
   } else {
     rows.forEach((r,idx)=>{
       const tier = ratingTier(r.rating);
-      html += `<div class="row" style="justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid var(--border)">
-        <div class="row" style="align-items:center;gap:10px">
-          <div style="width:24px;text-align:center;font-weight:800;color:${idx<3?'#c8912a':'var(--sub)'}">${idx+1}</div>
-          <div>
-            <div style="font-weight:700">${esc(r.name)}</div>
-            <div class="small-note">${r.games}戦・平均${r.avgRank.toFixed(2)}位・トップ率${r.topRate.toFixed(0)}%</div>
+      const expanded = UI.rankingExpandedName===r.name;
+      const waveLayer = tier.waves ? `<svg class="rating-card-waves" viewBox="0 0 200 40" preserveAspectRatio="none"><path d="M0 20 Q25 5 50 20 T100 20 T150 20 T200 20 V40 H0 Z" fill="rgba(143,224,242,.14)"/><path d="M0 28 Q25 15 50 28 T100 28 T150 28 T200 28 V40 H0 Z" fill="rgba(143,224,242,.22)"/></svg>` : '';
+      const bambooLayer = tier.bamboo ? `<div class="rating-card-bamboo"><span></span><span></span><span></span><span></span><span></span></div>` : '';
+      html += `<div class="rating-card" style="background:${tier.grad};border:1px solid ${tier.border};margin-bottom:10px;padding:14px;text-align:left;cursor:pointer" onclick="Ranking.toggleExpand('${esc(r.name).replace(/'/g,"\\'")}')">
+        ${bambooLayer}${waveLayer}
+        <div class="rating-card-icon">${tier.icon}</div>
+        <div class="rating-card-shine"></div>
+        <div style="position:relative;z-index:1">
+          <div class="row" style="justify-content:space-between;align-items:center">
+            <div class="row" style="align-items:center;gap:10px">
+              <div style="width:20px;text-align:center;font-weight:800;color:${tier.valueColor}">${idx+1}</div>
+              <div style="font-weight:700;color:${tier.text}">${esc(r.name)}</div>
+            </div>
+            <div style="font-weight:800;font-size:19px;color:${tier.valueColor}">${r.rating.toFixed(1)}</div>
           </div>
-        </div>
-        <div style="text-align:right">
-          <div style="font-weight:800;font-size:17px">${r.rating.toFixed(1)}</div>
-          <div class="small-note">${tier.title}</div>
+          <div class="row" style="justify-content:space-between;align-items:center;margin-top:8px">
+            <span style="font-size:11.5px;color:${tier.sub}">${r.games}戦・平均${r.avgRank.toFixed(2)}位・トップ率${r.topRate.toFixed(0)}%</span>
+            <span style="font-size:11.5px;font-weight:700;color:${tier.text};background:${tier.badgeBg};padding:2px 9px;border-radius:12px">${tier.title}</span>
+          </div>
+          ${expanded?renderRankingDetail(r.name, tier):''}
         </div>
       </div>`;
     });
   }
-  html += `</div><button class="btn sm secondary block" style="margin-top:8px" onclick="Ranking.reload()">🔄 最新のデータに更新</button>`;
+  html += `<button class="btn sm secondary block" style="margin-top:4px;margin-bottom:14px" onclick="Ranking.reload()">🔄 最新のデータに更新</button>`;
 
   if(UI.isAdmin){
     const allNames = Array.from(new Set((UI.rankingData||[]).flatMap(g=>(g.players||[]).map(p=>p.name)))).sort();
@@ -2509,10 +2559,13 @@ function renderRanking(){
     </div>`;
   }
 
+  html += `<div class="card"><div class="small-note">アプリを使っている全アカウントの対局データ（同じ対局の重複は自動で除外）をもとに集計しています。名前が完全一致する人同士でまとめて集計されるため、表記ゆれがあると別人として分かれて表示されることがあります。</div></div>`;
+
   document.getElementById('app').innerHTML = html;
 }
 const Ranking = {
-  setPlayerCount(pc){ UI.rankingPlayerCount=pc; render(); },
+  setPlayerCount(pc){ UI.rankingPlayerCount=pc; UI.rankingExpandedName=null; render(); },
+  toggleExpand(name){ UI.rankingExpandedName = (UI.rankingExpandedName===name) ? null : name; render(); },
   reload(){ UI.rankingData=null; UI.rankingError=null; render(); },
   updateAliasForm(key,val){
     UI.adminAliasForm = UI.adminAliasForm || { from:'', to:'' };
