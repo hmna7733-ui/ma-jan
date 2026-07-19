@@ -509,12 +509,16 @@ function pushSettlementToGlobalRanking(settlement, rule){
 /* ============ 管理者機能 ============ */
 let _isAdminCache = null;
 async function checkIsAdmin(){
-  if(!fbAuth || !currentUser) return false;
+  if(!fbAuth || !currentUser){ UI.adminCheckDebug = { uid:null, note:'未ログイン' }; return false; }
   if(_isAdminCache!==null) return _isAdminCache;
   try{
     const doc = await fbDb.collection('mahjong_admins').doc(currentUser.uid).get();
     _isAdminCache = doc.exists;
-  }catch(e){ _isAdminCache = false; }
+    UI.adminCheckDebug = { uid: currentUser.uid, exists: doc.exists, data: doc.exists ? doc.data() : null, error: null };
+  }catch(e){
+    _isAdminCache = false;
+    UI.adminCheckDebug = { uid: currentUser.uid, exists:false, error: (e && (e.code+': '+e.message)) || String(e) };
+  }
   return _isAdminCache;
 }
 
@@ -2708,6 +2712,17 @@ function renderRanking(){
   }
 
   html += `<div class="card"><div class="small-note">アプリを使っている全アカウントの対局データ（同じ対局の重複は自動で除外）をもとに集計しています。名前が完全一致する人同士でまとめて集計されるため、表記ゆれがあると別人として分かれて表示されることがあります。</div></div>`;
+
+  if(UI.adminCheckDebug){
+    html += `<div class="card"><h3>🔍 管理者判定デバッグ情報</h3>
+      <div class="small-note" style="word-break:break-all">
+        UID: ${esc(UI.adminCheckDebug.uid||'(なし)')}<br>
+        判定結果: ${UI.adminCheckDebug.exists?'管理者ドキュメントあり':'管理者ドキュメントなし、またはエラー'}<br>
+        ${UI.adminCheckDebug.error?'エラー: '+esc(UI.adminCheckDebug.error):''}
+        ${UI.adminCheckDebug.data?'<br>ドキュメント内容: '+esc(JSON.stringify(UI.adminCheckDebug.data)):''}
+      </div>
+    </div>`;
+  }
 
   document.getElementById('app').innerHTML = html;
 }
