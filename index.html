@@ -320,6 +320,7 @@ input:focus,select:focus,textarea:focus{outline:none;border-color:var(--accent);
   <div class="tab" data-tab="home" onclick="Router.go('home')"><div class="ico">🏠</div>ホーム</div>
   <div class="tab" data-tab="history" onclick="Router.go('history')"><div class="ico">📜</div>履歴</div>
   <div class="tab" data-tab="analysis" onclick="Router.go('analysis')"><div class="ico">📊</div>データ</div>
+  <div class="tab" data-tab="ranking" onclick="Router.go('ranking')"><div class="ico">🏆</div>ランキング</div>
   <div class="tab" data-tab="settings" onclick="Router.go('settings')"><div class="ico">⚙</div>設定</div>
 </div>
 </div>
@@ -454,6 +455,40 @@ function queueCloudPush(immediate=false){
     .catch(e=>{ console.error('sync error', e); _isUploading=false; setTimeout(()=>queueCloudPush(true), 3000); });
   };
   if(immediate) doWrite(); else cloudPushTimer=setTimeout(doWrite, 700);
+}
+
+/* ============ ランキング（全アカウント共有・重複排除） ============
+   1半荘＝globalIdをドキュメントIDとして mahjong_global_games に保存する。
+   同じ対局を複数アカウントが持っていても、globalIdが同じなら同じドキュメントを
+   上書きするだけなので、自動的に重複が排除される。ベストエフォート（失敗しても無視）。 */
+function pushSessionToGlobalRanking(session, rule){
+  if(!fbAuth || !currentUser || !session.globalId) return;
+  const payload = {
+    date: session.date,
+    ruleName: rule ? rule.name : '',
+    playerCount: rule ? rule.playerCount : session.players.length,
+    players: session.players.map(p=>({ name: memberName(p.memberId), rawScore:p.rawScore, rank:p.rank, point:p.point })),
+    contributedBy: currentUser.uid,
+    updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+  };
+  fbDb.collection('mahjong_global_games').doc(session.globalId).set(payload)
+    .catch(e=>{
+      // 本人（最初にこの対局を登録したアカウント）以外からの上書きはセキュリティルールで拒否される想定。
+      // その場合はローカルの編集自体は成立させつつ、共有ランキングへの反映だけ静かにスキップする。
+      console.error('global ranking push error', e);
+    });
+}
+
+/* ============ 管理者機能 ============ */
+let _isAdminCache = null;
+async function checkIsAdmin(){
+  if(!fbAuth || !currentUser) return false;
+  if(_isAdminCache!==null) return _isAdminCache;
+  try{
+    const doc = await fbDb.collection('mahjong_admins').doc(currentUser.uid).get();
+    _isAdminCache = doc.exists;
+  }catch(e){ _isAdminCache = false; }
+  return _isAdminCache;
 }
 
 function doLogout(){
@@ -1222,9 +1257,10 @@ const InputForm = {
       s.ruleId=rule.id; s.players=players; s.babaTotal=computed.babaTotal; s.bustedMemberIds=bustedMemberIds; s.tobashiTargetId=tobashiTargetId;
       sessionRef = s;
     } else {
-      sessionRef = { id:uid(), date:todayStr(), ruleId:rule.id, players, babaTotal:computed.babaTotal, bustedMemberIds, tobashiTargetId };
+      sessionRef = { id:uid(), globalId:uid(), date:todayStr(), ruleId:rule.id, players, babaTotal:computed.babaTotal, bustedMemberIds, tobashiTargetId };
       DB.history.push(sessionRef);
     }
+    if(!sessionRef.globalId) sessionRef.globalId = uid();
     if(rule.chipEnabled && rule.chipPerGameEnabled){
       const chipDeltas = {};
       UI.formMemberIds.forEach(mid=>{
@@ -1235,6 +1271,7 @@ const InputForm = {
       persist('chipTx');
     }
     persist('history');
+    pushSessionToGlobalRanking(sessionRef, rule);
     UI.showInputForm=false; UI.editingHistoryId=null;
     UI._saving = false;
     document.getElementById('modalRoot').innerHTML='';
@@ -1755,6 +1792,10 @@ const Settlement = {
     if(!st) return;
     const rule = getRule(st.ruleId);
     const sessions = DB.history.filter(h=>st.sessionIds.includes(h.id));
+    let needsPersist = false;
+    sessions.forEach(s=>{ if(!s.globalId){ s.globalId = uid(); needsPersist = true; } });
+    if(needsPersist) persist('history');
+    sessions.forEach(s=>pushSessionToGlobalRanking(s, rule));
     const perMemberByName = {};
     const memberColorByName = {};
     st.memberIds.forEach(mid=>{
@@ -1771,6 +1812,7 @@ const Settlement = {
       perMemberByName,
       sessions: sessions.map(s=>({
         date: s.date,
+        globalId: s.globalId||null,
         babaTotal: s.babaTotal||0,
         players: s.players.map(p=>({name:memberName(p.memberId), rawScore:p.rawScore, rank:p.rank, point:p.point}))
       })),
@@ -1812,8 +1854,11 @@ const Settlement = {
         (payload.sessions||[]).forEach(s=>{
           const players = s.players.map(p=>({ memberId: nameToId[p.name], rawScore:p.rawScore, rank:p.rank, point:p.point }));
           const newId = uid();
-          DB.history.push({ id:newId, date:s.date, ruleId:rule.id, players, babaTotal:s.babaTotal||0, settlementId });
+          const globalId = s.globalId || uid();
+          const newSession = { id:newId, globalId, date:s.date, ruleId:rule.id, players, babaTotal:s.babaTotal||0, settlementId };
+          DB.history.push(newSession);
           newSessionIds.push(newId);
+          pushSessionToGlobalRanking(newSession, rule);
         });
         const perMember = {};
         Object.entries(payload.perMemberByName||{}).forEach(([name,v])=>{
@@ -1901,6 +1946,46 @@ function gamesForMember(memberId, pcFilter){
    S(3人打ち) = 1位+40 / 2位0 / 3位-40
    卓の平均Rは自分を含めた全員の平均。初期値は全員1500。
    人数（3人打ち/4人打ち）ごとに完全に別のレーティングとして管理する。 */
+/* 全アカウント共有のグローバルランキング集計（名前をキーに集計。重複対局はglobalIdで既に排除済み） */
+function simulateGlobalRatings(games, playerCount, aliasMap){
+  aliasMap = aliasMap || {};
+  const resolveName = (name)=>{
+    let n = name, guard=0;
+    while(aliasMap[n] && aliasMap[n]!==n && guard<5){ n = aliasMap[n]; guard++; }
+    return n;
+  };
+  const filtered = (games||[]).filter(g=>g.playerCount===playerCount && g.players && g.players.length===playerCount)
+    .slice().sort((a,b)=>(a.date||'').localeCompare(b.date||''));
+  const ratings={}, gameCounts={}, stats={};
+  const ensure=(name)=>{ if(ratings[name]===undefined){ ratings[name]=1500; gameCounts[name]=0; stats[name]={n:0, rankSum:0, top:0}; } };
+  const sTable = playerCount===3 ? {1:40,2:0,3:-40} : {1:30,2:10,3:-10,4:-30};
+  filtered.forEach(g=>{
+    const players = g.players.map(p=>({...p, name: resolveName(p.name)}));
+    players.forEach(p=>ensure(p.name));
+    const rAvg = players.reduce((a,p)=>a+ratings[p.name],0)/players.length;
+    const updates={};
+    players.forEach(p=>{
+      const gc=gameCounts[p.name];
+      const K = gc<400 ? (1-gc*0.002) : 0.2;
+      const S = sTable[p.rank]||0;
+      const rOld=ratings[p.name];
+      updates[p.name]=rOld+K*(S+(rAvg-rOld)/100);
+    });
+    players.forEach(p=>{
+      ratings[p.name]=updates[p.name];
+      gameCounts[p.name]++;
+      stats[p.name].n++;
+      stats[p.name].rankSum+=p.rank;
+      if(p.rank===1) stats[p.name].top++;
+    });
+  });
+  return Object.keys(ratings).map(name=>({
+    name, rating: ratings[name], games: gameCounts[name],
+    avgRank: stats[name].n ? stats[name].rankSum/stats[name].n : 0,
+    topRate: stats[name].n ? stats[name].top/stats[name].n*100 : 0
+  })).sort((a,b)=>b.rating-a.rating);
+}
+
 function simulateRatings(playerCount){
   const games = DB.history
     .filter(s=>{ const r=getRule(s.ruleId); return r && r.playerCount===playerCount; })
@@ -2311,6 +2396,153 @@ function generateInsights(memberId, pcFilter){
   return notes;
 }
 
+/* ============ 描画: ランキング ============ */
+async function loadRankingData(){
+  UI.rankingLoading = true;
+  UI.rankingError = null;
+  render();
+  try{
+    const snap = await fbDb.collection('mahjong_global_games').get();
+    UI.rankingData = snap.docs.map(d=>({ id:d.id, ...d.data() }));
+    const aliasSnap = await fbDb.collection('mahjong_global_name_aliases').get();
+    const aliasMap = {};
+    aliasSnap.docs.forEach(d=>{ aliasMap[d.id] = d.data().canonicalName; });
+    UI.rankingAliasMap = aliasMap;
+    UI.isAdmin = await checkIsAdmin();
+  }catch(e){
+    console.error('ranking fetch error', e);
+    UI.rankingError = firestoreErrorMessage(e, 'mahjong_global_games');
+  }
+  UI.rankingLoading = false;
+  render();
+}
+
+function renderRanking(){
+  let html = `<div class="card"><h3>🏆 ランキング</h3>`;
+  if(!fbAuth || !currentUser){
+    html += `<div class="small-note">ランキングを見るにはログインが必要です。設定→アカウントからログインしてください。</div></div>`;
+    document.getElementById('app').innerHTML = html;
+    return;
+  }
+  html += `<div class="small-note">アプリを使っている全アカウントの対局データ（同じ対局の重複は自動で除外）をもとに集計しています。名前が完全一致する人同士でまとめて集計されるため、表記ゆれがあると別人として分かれて表示されることがあります。</div></div>`;
+
+  if(UI.rankingLoading){
+    html += `<div class="card"><div class="small-note">読み込み中…</div></div>`;
+    document.getElementById('app').innerHTML = html;
+    return;
+  }
+  if(UI.rankingError){
+    html += `<div class="card"><div class="small-note">${esc(UI.rankingError)}</div><button class="btn sm secondary block" style="margin-top:8px" onclick="Ranking.reload()">再試行</button></div>`;
+    document.getElementById('app').innerHTML = html;
+    return;
+  }
+  if(!UI.rankingData){
+    document.getElementById('app').innerHTML = html + `<div class="card"><div class="small-note">読み込み中…</div></div>`;
+    loadRankingData();
+    return;
+  }
+
+  UI.rankingPlayerCount = UI.rankingPlayerCount || 4;
+  html += `<div class="mode-switch">
+    <div class="ms-opt ${UI.rankingPlayerCount===4?'active':''}" onclick="Ranking.setPlayerCount(4)">4人打ち</div>
+    <div class="ms-opt ${UI.rankingPlayerCount===3?'active':''}" onclick="Ranking.setPlayerCount(3)">3人打ち</div>
+  </div>`;
+
+  const rows = simulateGlobalRatings(UI.rankingData, UI.rankingPlayerCount, UI.rankingAliasMap);
+  html += `<div class="card">`;
+  if(rows.length===0){
+    html += `<div class="small-note">まだデータがありません。</div>`;
+  } else {
+    rows.forEach((r,idx)=>{
+      const tier = ratingTier(r.rating);
+      html += `<div class="row" style="justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid var(--border)">
+        <div class="row" style="align-items:center;gap:10px">
+          <div style="width:24px;text-align:center;font-weight:800;color:${idx<3?'#c8912a':'var(--sub)'}">${idx+1}</div>
+          <div>
+            <div style="font-weight:700">${esc(r.name)}</div>
+            <div class="small-note">${r.games}戦・平均${r.avgRank.toFixed(2)}位・トップ率${r.topRate.toFixed(0)}%</div>
+          </div>
+        </div>
+        <div style="text-align:right">
+          <div style="font-weight:800;font-size:17px">${r.rating.toFixed(1)}</div>
+          <div class="small-note">${tier.title}</div>
+        </div>
+      </div>`;
+    });
+  }
+  html += `</div><button class="btn sm secondary block" style="margin-top:8px" onclick="Ranking.reload()">🔄 最新のデータに更新</button>`;
+
+  if(UI.isAdmin){
+    const allNames = Array.from(new Set((UI.rankingData||[]).flatMap(g=>(g.players||[]).map(p=>p.name)))).sort();
+    UI.adminAliasForm = UI.adminAliasForm || { from:'', to:'' };
+    html += `<div class="card" style="border:1.5px solid var(--gold);background:linear-gradient(180deg,#fffaf0,#fdf3d8)">
+      <h3>🛡 管理者機能</h3>
+      <div class="small-note" style="margin-bottom:10px">この機能は管理者権限を持つアカウントにのみ表示されています。ここで行った名前の統合は、ランキングを見る全アカウントに反映されます。</div>
+      <div class="field-wrap"><label class="field">統合する名前（この名前を→に変える）</label>
+        <select onchange="Ranking.updateAliasForm('from', this.value)">
+          <option value="">選択してください</option>
+          ${allNames.map(n=>`<option value="${esc(n)}" ${UI.adminAliasForm.from===n?'selected':''}>${esc(n)}</option>`).join('')}
+        </select>
+      </div>
+      <div class="field-wrap"><label class="field">統合先の名前（正式名）</label>
+        <select onchange="Ranking.updateAliasForm('to', this.value)">
+          <option value="">選択してください</option>
+          ${allNames.map(n=>`<option value="${esc(n)}" ${UI.adminAliasForm.to===n?'selected':''}>${esc(n)}</option>`).join('')}
+        </select>
+      </div>
+      <button class="btn sm secondary block" onclick="Ranking.saveAlias()">この統合を保存する</button>
+      ${Object.keys(UI.rankingAliasMap||{}).length?`
+      <div class="section-title">現在の統合設定</div>
+      ${Object.entries(UI.rankingAliasMap).map(([from,to])=>`
+        <div class="row" style="justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid var(--border)">
+          <span class="small-note">${esc(from)} → ${esc(to)}</span>
+          <button class="btn sm danger" onclick="Ranking.removeAlias('${esc(from).replace(/'/g,"&#39;")}')">解除</button>
+        </div>`).join('')}` : ''}
+      <div class="section-title">全対局データ（${(UI.rankingData||[]).length}件）</div>
+      <div class="small-note" style="margin-bottom:8px">個別の対局データを直接削除できます（編集を反映するには、該当データを一度削除してから該当アカウントで保存し直してもらってください）。</div>
+      ${(UI.rankingData||[]).slice().sort((a,b)=>(b.date||'').localeCompare(a.date||'')).slice(0,50).map(g=>`
+        <div class="row" style="justify-content:space-between;align-items:center;padding:7px 0;border-bottom:1px solid var(--border);font-size:12px">
+          <span>${esc(g.date||'')} ・ ${esc(g.ruleName||'')} ・ ${(g.players||[]).map(p=>esc(p.name)+p.rank+'位').join('・')}</span>
+          <button class="btn sm danger" onclick="Ranking.deleteGlobalGame('${g.id}')">削除</button>
+        </div>`).join('')}
+      ${(UI.rankingData||[]).length>50?`<div class="small-note" style="margin-top:6px">先頭50件のみ表示しています。</div>`:''}
+    </div>`;
+  }
+
+  document.getElementById('app').innerHTML = html;
+}
+const Ranking = {
+  setPlayerCount(pc){ UI.rankingPlayerCount=pc; render(); },
+  reload(){ UI.rankingData=null; UI.rankingError=null; render(); },
+  updateAliasForm(key,val){
+    UI.adminAliasForm = UI.adminAliasForm || { from:'', to:'' };
+    UI.adminAliasForm[key]=val;
+  },
+  async saveAlias(){
+    const f = UI.adminAliasForm;
+    if(!f || !f.from || !f.to || f.from===f.to){ renderInfoModal('入力が足りません','統合する名前と統合先の名前（別々）を選んでください。'); return; }
+    try{
+      await fbDb.collection('mahjong_global_name_aliases').doc(f.from).set({ canonicalName:f.to });
+      UI.adminAliasForm = { from:'', to:'' };
+      await loadRankingData();
+    }catch(e){ renderInfoModal('保存に失敗しました', firestoreErrorMessage(e, 'mahjong_global_name_aliases')); }
+  },
+  async removeAlias(from){
+    try{
+      await fbDb.collection('mahjong_global_name_aliases').doc(from).delete();
+      await loadRankingData();
+    }catch(e){ renderInfoModal('削除に失敗しました', firestoreErrorMessage(e, 'mahjong_global_name_aliases')); }
+  },
+  deleteGlobalGame(id){
+    showConfirmModal('この対局データを削除しますか？', '全アカウント共有のランキングデータから削除されます。この操作は元に戻せません。', async ()=>{
+      try{
+        await fbDb.collection('mahjong_global_games').doc(id).delete();
+        await loadRankingData();
+      }catch(e){ renderInfoModal('削除に失敗しました', firestoreErrorMessage(e, 'mahjong_global_games')); }
+    }, '削除する');
+  }
+};
+
 function renderAnalysis(){
   UI.analysisPlayerCount = UI.analysisPlayerCount || 'all';
   const playerCounts = Array.from(new Set(DB.rules.map(r=>r.playerCount))).sort();
@@ -2641,6 +2873,7 @@ function renderSettings(){
         <button class="btn secondary block" onclick="Settings.forceSync()">今すぐクラウドに上書き保存</button>
         <div class="hint" style="margin-bottom:14px">電波のない場所で入力した内容を、後からまとめてクラウドに反映したい時に使ってください。</div>
         <button class="btn ghost block" style="margin-bottom:10px" onclick="Settlement.openReceiveSettlement()">🔗 コードで精算表を受け取る</button>
+        <button class="btn ghost block" style="margin-bottom:10px" onclick="Settings.backfillGlobalRanking()">🏆 過去の対局をランキングに反映する</button>
         <button class="btn danger block" onclick="doLogout()">ログアウト</button>`;
     } else {
       html+=`<div class="small-note" style="margin-bottom:14px">現在はこの端末のみにデータを保存しています。<br>ログインすると他の端末とスコアを同期できます。</div>
@@ -2653,6 +2886,17 @@ function renderSettings(){
 
 const Settings = {
   setSub(s){ UI.settingsSub=s; render(); },
+  async backfillGlobalRanking(){
+    if(!fbAuth || !currentUser){ renderInfoModal('ログインが必要です','ランキングへの反映にはログインが必要です。'); return; }
+    const targets = DB.history.filter(s=>!s.globalId);
+    if(targets.length===0){ renderInfoModal('反映済みです','未反映の過去対局はありませんでした。'); return; }
+    showConfirmModal('過去の対局をランキングに反映しますか？', `未反映の対局が${targets.length}件あります。すべてにIDを発行し、共有ランキングに送信します。`, ()=>{
+      targets.forEach(s=>{ s.globalId = uid(); });
+      persist('history');
+      targets.forEach(s=>{ const rule = getRule(s.ruleId); pushSessionToGlobalRanking(s, rule); });
+      renderInfoModal('反映しました', `${targets.length}件の過去対局をランキングに反映しました。`);
+    }, '反映する');
+  },
 
   newMember(){
     UI.editingMemberId=null;
@@ -3653,6 +3897,7 @@ function render(){
   if(UI.tab==='home') renderHome();
   else if(UI.tab==='history') renderHistory();
   else if(UI.tab==='analysis') renderAnalysis();
+  else if(UI.tab==='ranking') renderRanking();
   else if(UI.tab==='settings') renderSettings();
 }
 
