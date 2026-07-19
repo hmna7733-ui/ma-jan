@@ -1941,7 +1941,7 @@ function computeSettlementStats(memberId, pcFilter){
 function computeHeadToHead(memberId, pcFilter){
   pcFilter = pcFilter || 'all';
   const opp={};
-  const ensure=(oid)=>{ if(!opp[oid]) opp[oid]={games:0,win:0,lose:0,draw:0,scoreDiff:0,chipDiff:0,moneyDiff:0,rankCounts:[0,0,0,0],maxRank:0,tobashiFromCount:0,tobashiToCount:0}; return opp[oid]; };
+  const ensure=(oid)=>{ if(!opp[oid]) opp[oid]={games:0,win:0,lose:0,draw:0,scoreDiff:0,chipDiff:0,moneyDiff:0,rankCounts:[0,0,0,0],maxRank:0,tobashiFromCount:0,tobashiToCount:0,umaMi:0}; return opp[oid]; };
 
   /* スコア差：各対局ごとに「勝ち組の取り分は負け組の損失から比例配分される」と考え、
      同じ側（勝ち同士・負け同士）の差分は0、勝ち-負けの間だけ差分が生まれるようにする */
@@ -1955,6 +1955,7 @@ function computeHeadToHead(memberId, pcFilter){
       const o=ensure(p.memberId);
       o.games++;
       if(me.rank<p.rank) o.win++; else if(me.rank>p.rank) o.lose++; else o.draw++;
+      o.umaMi += (p.rank - me.rank);
       o.rankCounts[me.rank-1] = (o.rankCounts[me.rank-1]||0)+1;
       o.maxRank = Math.max(o.maxRank, s.players.length);
     });
@@ -2011,6 +2012,19 @@ function computeHeadToHead(memberId, pcFilter){
         });
       });
     }
+  });
+
+  /* チップ差は表示単位（枚）の性質上、常に3人打ちの精算データのみを参照する（4人打ちは対象外） */
+  DB.settlements.forEach(st=>{
+    if(!st.memberIds.includes(memberId)) return;
+    const rule=getRule(st.ruleId);
+    const pc = rule?rule.playerCount:st.memberIds.length;
+    if(pc!==3) return;
+    const values = st.memberIds.map(mid=>{
+      const pm = st.perMember[mid] || {scorePoint:0,chipCount:0};
+      return { mid, chipCount: pm.chipCount||0 };
+    });
+    st.memberIds.forEach(oid=>{ if(oid!==memberId) ensure(oid); });
     const winnersC = values.filter(v=>v.chipCount>0);
     const losersC = values.filter(v=>v.chipCount<0);
     const totalWinC = winnersC.reduce((a,w)=>a+w.chipCount,0);
@@ -2277,20 +2291,23 @@ function renderAnalysis(){
             ${expanded?`
               <div class="stat-grid" style="margin-top:12px">
                 <div class="stat-box"><div class="v">${o.games}</div><div class="l">対局数</div></div>
-                ${pcFilter===4?
+                ${pcFilter==='all' ? '' : (pcFilter===4?
                   `<div class="stat-box"><div class="v" style="font-size:15px">${(o.rankCounts.slice(0,4).join('-'))}</div><div class="l">1-2-3-4着</div></div>`
                   :`<div class="stat-box"><div class="v">${o.win}-${o.lose}-${o.draw}</div><div class="l">勝-負-分</div></div>
-                <div class="stat-box"><div class="v">${sign(o.chipDiff)}枚</div><div class="l">チップ差</div></div>`}
+                <div class="stat-box"><div class="v">${sign(o.chipDiff)}枚</div><div class="l">チップ差（3人打ち）</div></div>`)}
+                ${pcFilter!=='all' ? `
                 <div class="stat-box" style="background:linear-gradient(180deg,#e8f1fc,#cfe3fa)"><div class="v" style="color:#2a5d9f">${o.games?Math.round((o.rankCounts[0]||0)/o.games*100):0}%</div><div class="l">トップ率</div></div>
-                <div class="stat-box" style="background:linear-gradient(180deg,#fdecea,#f6d2ce)"><div class="v" style="color:#b23b2e">${(o.games&&o.maxRank)?Math.round((o.rankCounts[o.maxRank-1]||0)/o.games*100):0}%</div><div class="l">ラス率</div></div>
+                <div class="stat-box" style="background:linear-gradient(180deg,#fdecea,#f6d2ce)"><div class="v" style="color:#b23b2e">${(o.games&&o.maxRank)?Math.round((o.rankCounts[o.maxRank-1]||0)/o.games*100):0}%</div><div class="l">ラス率</div></div>` : ''}
                 <div class="stat-box" style="background:linear-gradient(180deg,#fff3e6,#ffdfb8)"><div class="v" style="color:#b5651d">${sign(Math.round(o.scoreDiff*10)/10)}</div><div class="l">スコア差</div></div>
                 <div class="stat-box" style="grid-column:span 3;background:linear-gradient(180deg,#fff9df,#f8e8a8)"><div class="v" style="color:#8a6d1d">${sign(Math.round(o.moneyDiff))}P</div><div class="l">ポイント差</div></div>
               </div>
+              ${pcFilter!=='all' ? `
               <div class="section-title">この相手との着順の割合</div>
-              ${o.maxRank?pieChartHtml(o.rankCounts, o.games, o.maxRank, 96):''}
+              ${o.maxRank?pieChartHtml(o.rankCounts, o.games, o.maxRank, 96):''}` : ''}
               <div class="stat-grid" style="margin-top:12px">
                 <div class="stat-box"><div class="v">${o.tobashiFromCount}</div><div class="l">飛ばした回数</div></div>
                 <div class="stat-box"><div class="v">${o.tobashiToCount}</div><div class="l">飛ばされた回数</div></div>
+                <div class="stat-box"><div class="v ${o.umaMi>0?'pos':o.umaMi<0?'neg':''}">${sign(o.umaMi)}</div><div class="l">通算馬身数</div></div>
               </div>
               <button class="link-btn" style="margin-top:8px" onclick="Analysis.setOpponent('${oid}')">この相手との対局一覧を見る</button>
             `:''}
