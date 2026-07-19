@@ -173,8 +173,7 @@ input:focus,select:focus,textarea:focus{outline:none;border-color:var(--accent);
 .session-card .meta .d{font-size:12px;color:var(--sub);font-weight:600;}
 .session-card .players{display:flex;flex-wrap:wrap;gap:6px;font-size:12.5px;}
 .session-card .players span{background:var(--accent-light);padding:4px 9px;border-radius:9px;display:inline-flex;align-items:center;gap:5px;}
-.session-card .actions{margin-top:9px;display:flex;flex-direction:column;gap:10px;}
-.session-card .actions .btn{width:100%;}
+.session-card .actions{margin-top:9px;display:flex;flex-wrap:wrap;gap:8px;}
 
 .modal-overlay{
   position:fixed;inset:0;background:rgba(10,20,15,.5);z-index:50;
@@ -1589,9 +1588,11 @@ function settlementCardHtml(st){
         `}
       </div>
       <div>${memberRows}</div>
-      <div class="actions" style="margin-top:12px">
+      <div style="display:flex;flex-direction:column;gap:10px;margin-top:12px">
         <button class="btn sm secondary" onclick="Settlement.toggleExpand('${st.id}')">${expanded?'対局履歴を閉じる':'対局履歴を見る（'+sessions.length+'件）'}</button>
         ${canEdit?`<button class="btn sm secondary" onclick="Settlement.unlock('${st.id}')">対局を編集</button>`:''}
+      </div>
+      <div style="display:flex;gap:16px;margin-top:28px">
         <button class="btn sm secondary" onclick="Settlement.share('${st.id}')">🔗 送る</button>
         <button class="btn sm danger" onclick="Settlement.remove('${st.id}')">削除</button>
       </div>
