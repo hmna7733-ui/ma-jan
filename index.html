@@ -1018,7 +1018,7 @@ function renderHome(){
   const todaySessions = DB.history.filter(h=>h.date===todayStr() && h.ruleId===rule.id && !h.settlementId);
   const readyToInput = UI.home.memberIds.length===rule.playerCount;
   html += `<button class="fab-record" ${readyToInput?'':'disabled'} onclick="InputForm.open()" title="対局結果を記録">＋</button>`;
-  html += `<div class="rating-card" style="background:radial-gradient(circle at 78% 105%, rgba(247,201,117,.5), transparent 55%), radial-gradient(circle at 12% 0%, rgba(255,110,40,.3), transparent 55%), linear-gradient(160deg,#1a0d05,#2b1207 55%,#140803);border:1.5px solid rgba(230,180,90,.55);padding:18px;margin-top:16px">
+  html += `<div id="todayScoreCard" class="rating-card" style="background:radial-gradient(circle at 78% 105%, rgba(247,201,117,.5), transparent 55%), radial-gradient(circle at 12% 0%, rgba(255,110,40,.3), transparent 55%), linear-gradient(160deg,#1a0d05,#2b1207 55%,#140803);border:1.5px solid rgba(230,180,90,.55);padding:18px;margin-top:16px">
     <div class="rating-card-icon" style="font-size:96px">👑</div>
     <div class="rating-card-shine"></div>
     <div style="position:relative;z-index:1">
@@ -1408,6 +1408,8 @@ const InputForm = {
     UI._saving = false;
     document.getElementById('modalRoot').innerHTML='';
     render();
+    const scoreCard = document.getElementById('todayScoreCard');
+    if(scoreCard) scoreCard.scrollIntoView({block:'start'});
   }
 };
 
