@@ -953,17 +953,33 @@ function avatarHtml(id, size){
 }
 
 /* ============ ルーター ============ */
-const Router = { go(tab){ UI.tab=tab; UI.showInputForm=false; UI.editingHistoryId=null; render(); } };
+const Router = { go(tab){ UI.tab=tab; UI.showInputForm=false; UI.editingHistoryId=null; render(); window.scrollTo(0,0); } };
 
 /* ============ 描画: ホーム ============ */
 function renderHome(){
   const rule = getRule(UI.home.ruleId);
   let html='';
-  html += `<div class="card">
-    <div class="row" style="justify-content:space-between;align-items:center">
-      <h3 style="margin-bottom:0">🀄 本日の対局設定</h3>
-      ${UI.home.ruleId?`<button class="btn sm secondary" onclick="Settings.viewRuleDetail('${UI.home.ruleId}')">ルールの確認</button>`:''}
+  const homeCollapsed = rule && isSectionCollapsed('homeSettings');
+  const effRule = rule ? getEffectiveRule(rule, todayStr()) : null;
+  const hasOverride = rule ? !!getDailyOverride(todayStr(), rule.id) : false;
+  html += `<div class="rating-card" style="background:radial-gradient(circle at 85% 100%, rgba(230,190,90,.25), transparent 55%), linear-gradient(160deg,#0d1710,#1b2b1e 55%,#0a120c);border:1.5px solid rgba(230,190,90,.45);padding:16px">
+    <div class="rating-card-icon" style="font-size:80px">🀄</div>
+    <div class="rating-card-shine"></div>
+    <div style="position:relative;z-index:1">
+    <div class="row" style="justify-content:space-between;align-items:center;cursor:pointer" onclick="toggleSectionCollapse('homeSettings')">
+      <h3 style="margin-bottom:0;color:#fff">🀄 本日の対局設定</h3>
+      <span style="font-size:18px;color:#fff">${homeCollapsed?'▸':'▾'}</span>
+    </div>`;
+  if(homeCollapsed){
+    html += `<div class="row" style="justify-content:space-between;align-items:center;margin-top:10px">
+      <span style="font-size:11.5px;color:rgba(255,255,255,.78)">選択中のルール: ${esc(rule.name)}（${rule.playerCount}人打ち）</span>
+      <button class="btn sm secondary" onclick="event.stopPropagation();Settings.viewRuleDetail('${rule.id}')">ルールの確認</button>
     </div>
+    ${UI.home.memberIds.length?`<div style="font-size:11.5px;color:rgba(255,255,255,.78);margin-top:6px">メンバー: ${UI.home.memberIds.map(mid=>esc(memberName(mid))).join('、')}</div>`:''}
+    </div></div>`;
+  } else {
+  html += `<div style="background:var(--card);border-radius:14px;padding:14px;margin-top:12px">
+    ${rule?`<div class="row" style="justify-content:flex-end"><button class="btn sm secondary" onclick="Settings.viewRuleDetail('${rule.id}')">ルールの確認</button></div>`:''}
     <div class="field-wrap">
       <label class="field">ルール</label>
       <select onchange="Home.setRule(this.value)">
@@ -972,14 +988,13 @@ function renderHome(){
     </div>`;
   if(!rule){
     if(DB.rules.length===0){
-      html += `<div class="empty-state"><div class="big">📋</div>ルールが未登録です<br><button class="btn secondary" style="margin-top:12px" onclick="Router.go('settings')">設定でルールを追加</button></div></div>`;
+      html += `<div class="empty-state"><div class="big">📋</div>ルールが未登録です<br><button class="btn secondary" style="margin-top:12px" onclick="Router.go('settings')">設定でルールを追加</button></div>`;
     } else {
-      html += `<div class="empty-state"><div class="big">🀄</div>上のプルダウンからルールを選んでください</div></div>`;
+      html += `<div class="empty-state"><div class="big">🀄</div>上のプルダウンからルールを選んでください</div>`;
     }
+    html += `</div></div></div>`;
     document.getElementById('app').innerHTML=html; return;
   }
-  const effRule = getEffectiveRule(rule, todayStr());
-  const hasOverride = !!getDailyOverride(todayStr(), rule.id);
   if(rule.rateEnabled || rule.chipEnabled){
     html += `<div class="row" style="gap:14px;margin-top:10px;flex-wrap:wrap;align-items:center">
       ${rule.rateEnabled?`<span class="small-note">レート: 1000点＝${effRule.rate}P</span>`:''}
@@ -987,7 +1002,6 @@ function renderHome(){
       <button class="link-btn" onclick="Home.openRateOverride()">${hasOverride?'本日は変更中（編集）':'本日だけ変更する'}</button>
     </div>`;
   }
-  const todaySessions = DB.history.filter(h=>h.date===todayStr() && h.ruleId===rule.id && !h.settlementId);
   const visibleMembers = DB.members.filter(m => !m.excludedRuleIds || !m.excludedRuleIds.includes(rule.id));
   html += `<label class="field">メンバー選択（${rule.playerCount}人）</label><div class="row wrap">`;
   if(visibleMembers.length===0){
@@ -999,7 +1013,9 @@ function renderHome(){
       html += `<div class="chip ${selected?'selected':''} ${disabled?'disabled':''}" onclick="${disabled?'':`Home.toggleMember('${m.id}')`}"><span class="dot" style="background:${selected?'#fff':m.color}"></span>${esc(m.name)}</div>`;
     });
   }
-  html += `</div></div>`;
+  html += `</div></div></div></div>`;
+  }
+  const todaySessions = DB.history.filter(h=>h.date===todayStr() && h.ruleId===rule.id && !h.settlementId);
   const readyToInput = UI.home.memberIds.length===rule.playerCount;
   html += `<button class="fab-record" ${readyToInput?'':'disabled'} onclick="InputForm.open()" title="対局結果を記録">＋</button>`;
   html += `<div class="card"><h3>📈 本日のトータルスコア</h3>`;
@@ -1632,7 +1648,7 @@ function settlementCardHtml(st){
   const sessions = DB.history.filter(h=>st.sessionIds.includes(h.id));
   const canEdit = !!currentUser && (!st.creatorUid || st.creatorUid===currentUser.uid || UI.isAdmin);
   return `<div class="rating-card" style="background:radial-gradient(circle at 85% 100%, rgba(230,190,90,.28), transparent 55%), linear-gradient(160deg,#0e1710,#1c2b1f 55%,#0a120c);border:1.5px solid rgba(230,190,90,.4);padding:16px">
-    <div class="rating-card-icon" style="font-size:70px">🧾</div>
+    <div class="rating-card-icon" style="font-size:70px">💎</div>
     <div class="rating-card-shine"></div>
     <div style="position:relative;z-index:1">
       <div style="font-size:12px;color:rgba(255,255,255,.7);margin-bottom:8px">${fmtDate(st.date)} ・ ${esc(rule?rule.name:'(ルール削除済)')} ・ ${memberList}</div>
@@ -1975,6 +1991,12 @@ const Settlement = {
       const doc = await fbDb.collection('mahjong_shared_settlements').doc(code).get();
       if(!doc.exists){ renderInfoModal('見つかりません','そのコードは見つかりませんでした。ご確認ください。'); return; }
       const payload = JSON.parse(doc.data().payload);
+      const dupSettlement = DB.settlements.find(s=>
+        (payload.globalId && s.globalId===payload.globalId) ||
+        (s.date===payload.date && getRule(s.ruleId) && getRule(s.ruleId).name===payload.ruleName &&
+          JSON.stringify((s.memberIds||[]).map(memberName).sort())===JSON.stringify((payload.memberNames||[]).slice().sort()))
+      );
+      const proceedReceive = ()=>{
       let rule = DB.rules.find(r=>r.name===payload.ruleName);
       if(!rule && payload.rule){
         rule = ensureRuleDefaults({...payload.rule, id:uid()});
@@ -2016,6 +2038,12 @@ const Settlement = {
         render();
         renderInfoModal('受け取りました','精算表と対局履歴を受け取りました。データタブの成績にも反映されます。');
       }, payload.memberColorByName || {});
+      };
+      if(dupSettlement){
+        showConfirmModal('このデータは既にあります', `${fmtDate(payload.date)}・${esc(payload.ruleName||'')}の精算表は、すでにこのアカウントに登録されているようです。それでも追加しますか？`, proceedReceive, '追加する');
+      } else {
+        proceedReceive();
+      }
     }catch(e){ console.error(e); renderInfoModal('受け取りに失敗しました', firestoreErrorMessage(e, 'mahjong_shared_settlements')); }
   }
 };
@@ -3047,7 +3075,7 @@ function renderAnalysis(){
       const darkA = `color-mix(in srgb, ${m.color} 55%, #050505)`;
       const darkB = `color-mix(in srgb, ${m.color} 20%, #000000)`;
       const glow = `color-mix(in srgb, ${m.color} 60%, transparent)`;
-      html+=`<div class="rating-card" style="background:radial-gradient(circle at 80% 100%, ${glow}, transparent 55%), linear-gradient(160deg, ${darkA}, ${darkB} 100%);border:1.5px solid color-mix(in srgb, ${m.color} 55%, #fff 10%);cursor:pointer;padding:16px" onclick="Analysis.setMember('${m.id}')">
+      html+=`<div class="rating-card" style="background:radial-gradient(circle at 80% 100%, ${glow}, transparent 55%), linear-gradient(160deg, ${darkA}, ${darkB} 100%);border:1.5px solid color-mix(in srgb, ${m.color} 55%, #fff 10%);cursor:pointer;padding:16px;margin-bottom:14px" onclick="Analysis.setMember('${m.id}')">
         <div class="rating-card-icon" style="font-size:80px">${idx===0?'👑':'🀄'}</div>
         <div class="rating-card-shine"></div>
         <div style="position:relative;z-index:1;text-align:center">
@@ -3642,14 +3670,23 @@ const Settings = {
     try{
       const doc = await fbDb.collection('mahjong_shared_rules').doc(code).get();
       if(!doc.exists){ renderInfoModal('見つかりません','そのコードは見つかりませんでした。コードをご確認ください。'); return; }
-      const rule = ensureRuleDefaults(JSON.parse(doc.data().rule));
-      rule.id = uid();
-      rule.name = rule.name + '（受け取り）';
-      DB.rules.push(rule);
-      persist('rules');
-      UI.receiveCode=null;
-      renderInfoModal('受け取りました','ルール「'+rule.name+'」を受け取りました。');
-      render();
+      const incoming = ensureRuleDefaults(JSON.parse(doc.data().rule));
+      const proceedReceive = ()=>{
+        const rule = {...incoming};
+        rule.id = uid();
+        rule.name = rule.name + '（受け取り）';
+        DB.rules.push(rule);
+        persist('rules');
+        UI.receiveCode=null;
+        renderInfoModal('受け取りました','ルール「'+rule.name+'」を受け取りました。');
+        render();
+      };
+      const dupRule = DB.rules.find(r=>r.name===incoming.name || r.name===incoming.name+'（受け取り）');
+      if(dupRule){
+        showConfirmModal('このデータは既にあります', `「${esc(dupRule.name)}」という同じルールが既に登録されているようです。それでも追加しますか？`, proceedReceive, '追加する');
+      } else {
+        proceedReceive();
+      }
     }catch(e){
       console.error(e);
       renderInfoModal('受け取りに失敗しました', firestoreErrorMessage(e, 'mahjong_shared_rules'));
