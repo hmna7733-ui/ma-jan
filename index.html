@@ -1135,7 +1135,7 @@ function sessionCardHtml(s, readOnly){
 }
 
 const Home = {
-  setRule(id){ UI.home.ruleId=id||null; UI.home.memberIds=[]; render(); },
+  setRule(id){ UI.home.ruleId=id||null; UI.home.memberIds=[]; localStorage.setItem('mj_collapse_homeSettings', '0'); render(); },
   toggleMember(id){
     const i=UI.home.memberIds.indexOf(id);
     if(i>=0) UI.home.memberIds.splice(i,1); else UI.home.memberIds.push(id);
