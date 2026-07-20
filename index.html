@@ -1408,8 +1408,13 @@ const InputForm = {
     UI._saving = false;
     document.getElementById('modalRoot').innerHTML='';
     render();
-    const scoreCard = document.getElementById('todayScoreCard');
-    if(scoreCard) scoreCard.scrollIntoView({block:'start'});
+    requestAnimationFrame(()=>{
+      const scoreCard = document.getElementById('todayScoreCard');
+      if(scoreCard){
+        const y = scoreCard.getBoundingClientRect().top + window.scrollY - 12;
+        window.scrollTo(0, Math.max(0,y));
+      }
+    });
   }
 };
 
