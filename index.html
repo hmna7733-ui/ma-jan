@@ -2635,6 +2635,19 @@ function pieChartHtml(rankCount, n, maxRank, size){
 /* 簡易ルールベースの分析コメント（AI分析：ローカルで完結する統計サマリー） */
 /* 平均順位のグレード判定（Web上の実データ・天鳳/雀魂の統計をもとにした目安）
    3人打ちは基準値2.00、4人打ちは基準値2.50 */
+function gradeColor(grade){
+  const map = {
+    SSS: { grad:'linear-gradient(135deg,#f7d774,#c9a441 60%,#f7e9b8)', text:'#3a2905', glow:'rgba(247,215,116,.6)' },
+    SS:  { grad:'linear-gradient(135deg,#8b7ae8,#5a4bb0)', text:'#fff', glow:'rgba(139,122,232,.55)' },
+    S:   { grad:'linear-gradient(135deg,#4fc3dd,#1d8aa8)', text:'#fff', glow:'rgba(79,195,221,.5)' },
+    A:   { grad:'linear-gradient(135deg,#7bd99a,#2f8f5f)', text:'#fff', glow:'rgba(123,217,154,.5)' },
+    B:   { grad:'linear-gradient(135deg,#a9dfb4,#4a9d6f)', text:'#fff', glow:'rgba(169,223,180,.45)' },
+    C:   { grad:'linear-gradient(135deg,#c9cdc4,#8b9086)', text:'#fff', glow:'rgba(180,185,175,.4)' },
+    D:   { grad:'linear-gradient(135deg,#f0a868,#d6772e)', text:'#fff', glow:'rgba(240,168,104,.5)' },
+    E:   { grad:'linear-gradient(135deg,#e8746a,#b23b2e)', text:'#fff', glow:'rgba(232,116,106,.55)' }
+  };
+  return map[grade] || map.C;
+}
 function rankTierGrade(avgRank, playerCount){
   const table3 = [
     [1.80,'SSS','異常な数値です。歴史的な超上振れか、飛び抜けた実力を持っています。'],
@@ -2665,18 +2678,17 @@ function rankTierGrade(avgRank, playerCount){
 
 function generateInsights(memberId, pcFilter){
   const s = computeStats(memberId, pcFilter);
-  if(!s || s.n<2) return ['対局数がもう少し増えると、傾向が見えてきます（目安は10半荘以上）。'];
+  if(!s || s.n<2) return { grade:null, notes:['対局数がもう少し増えると、傾向が見えてきます（目安は10半荘以上）。'] };
   const notes=[];
   const maxRank = s.maxRank;
   const baseline = (maxRank+1)/2; // 4人打ちなら2.5、3人打ちなら2.0が基準値
-  const secondRate = (s.rankCount[1]||0)/s.n*100;
   const t = computeTobashiStats(memberId, pcFilter);
   const c = computeSettlementStats(memberId, pcFilter);
+  let tier = null;
 
   if(pcFilter!=='all'){
     // 1. 平均順位のグレード判定（3人打ち基準2.00／4人打ち基準2.50の実データベース）
-    const tier = rankTierGrade(s.avgRank, pcFilter);
-    notes.push(`【${pcFilter}人打ち 平均順位グレード：${tier.grade}】平均順位${s.avgRank.toFixed(2)}（基準値${baseline.toFixed(2)}）。${tier.desc}`);
+    tier = rankTierGrade(s.avgRank, pcFilter);
 
     // 2. データの信頼度（対局数が少ないと数値がブレやすいため）
     if(s.n<15) notes.push(`※現在${s.n}戦のデータです。麻雀は運の要素が大きいため、対局数が少ないうちは数値が大きくブレます。まだ参考値程度に見てください。`);
@@ -2703,28 +2715,38 @@ function generateInsights(memberId, pcFilter){
         notes.push(`【スタイル診断：着順は良いが収支が伸びない型】着順自体は悪くないのに、精算ベースの収支はマイナスです。チップの被弾や放銃による失点が響いている可能性があるので、勝負手での押し引きラインを見直すと収支が改善するかもしれません。`);
       }
     }
+
+    // 5. 長期データでの「言い訳排除」診断：サンプルが十分なのに成績が悪い場合、運のせいにできないことを直言する
+    if(s.n>=50 && ['D','E'].includes(tier.grade)){
+      notes.push(`【${s.n}戦という長期データからの直言】配牌やツモの偏りは、これだけの試行回数があればほぼ平等に収束しています。それでも平均順位${s.avgRank.toFixed(2)}（グレード${tier.grade}）に留まっているのは、運ではなく「勝負すべき局面での押し引きの基準」か「手作りの速度」のどちらかに、繰り返し起きている根本的な課題がある可能性が高いです。`);
+    }
   }
 
-  // 5. 直近の調子（直近5戦 vs 通算）
-  if(s.games.length>=8){
-    const sorted=[...s.games].sort((a,b)=>a.date.localeCompare(b.date));
-    const recent=sorted.slice(-5);
-    const recentAvgRank=recent.reduce((a,g)=>a+g.players.find(p=>p.memberId===memberId).rank,0)/recent.length;
-    const recentAvgPoint=recent.reduce((a,g)=>a+g.players.find(p=>p.memberId===memberId).point,0)/recent.length;
-    const diff=s.avgRank-recentAvgRank;
-    if(diff>=0.4) notes.push(`直近5戦の平均順位は${recentAvgRank.toFixed(2)}（平均ポイント${sign(Math.round(recentAvgPoint*10)/10)}）で、通算より好調です。今の打ち筋を継続したいところです。`);
-    else if(diff<=-0.4) notes.push(`直近5戦の平均順位は${recentAvgRank.toFixed(2)}（平均ポイント${sign(Math.round(recentAvgPoint*10)/10)}）で、通算よりやや落ちています。疲れや対面の変化がないか振り返ってみてください。`);
-  }
-
-  // 6. 対戦相手：最も分が良い相手・悪い相手（4戦以上のデータがある相手のみ）
+  // 6. 対戦相手：レーティング差を考慮した相性分析（4戦以上のデータがある相手のみ）
   const opp = computeHeadToHead(memberId, pcFilter);
   const oppEntries = Object.entries(opp).filter(([,o])=>o.games>=4);
-  if(oppEntries.length){
+  if(oppEntries.length && pcFilter!=='all'){
     oppEntries.sort((a,b)=>b[1].scoreDiff-a[1].scoreDiff);
     const best = oppEntries[0];
     const worst = oppEntries[oppEntries.length-1];
-    if(best[1].scoreDiff>0) notes.push(`${memberName(best[0])}さんとは${best[1].games}戦で差分${sign(Math.round(best[1].scoreDiff*10)/10)}と相性が良好です。`);
-    if(worst[1].scoreDiff<0 && worst[0]!==best[0]) notes.push(`${memberName(worst[0])}さんとは${worst[1].games}戦で差分${sign(Math.round(worst[1].scoreDiff*10)/10)}とやや分が悪く、対面を意識した打ち回しが有効かもしれません。`);
+    const myRating = getMemberRating(memberId, pcFilter);
+    const ratingOf = (name)=>{ const mm=DB.members.find(x=>x.name===name); return mm?getMemberRating(mm.id, pcFilter):null; };
+    if(best[1].scoreDiff>0){
+      const oppRating = getMemberRating(best[0], pcFilter);
+      const gap = oppRating - myRating;
+      let extra = '';
+      if(gap>=50) extra = `Rで${Math.round(gap)}ほど上の相手にこの差をつけているのは、実力が数字以上に高いことの裏付けです。`;
+      else if(gap<=-50) extra = `ただしRでは自分の方が${Math.round(-gap)}ほど高いため、この差は「格下相手に順当に勝てている」という結果であり、過大評価はしすぎないほうが良さそうです。`;
+      notes.push(`${memberName(best[0])}さんとは${best[1].games}戦で差分${sign(Math.round(best[1].scoreDiff*10)/10)}と相性が良好です。${extra}`);
+    }
+    if(worst[1].scoreDiff<0 && worst[0]!==best[0]){
+      const oppRating = getMemberRating(worst[0], pcFilter);
+      const gap = oppRating - myRating;
+      let extra = '';
+      if(gap<=-50) extra = `Rでは自分の方が${Math.round(-gap)}ほど高いにもかかわらずこの結果なので、「相手が強い」で片付けるのは早計です。この相手との対局を見直し、何を通してしまっているのか（放銃か、無駄なオリか）を振り返る価値があります。`;
+      else if(gap>=50) extra = `相手はRで${Math.round(gap)}ほど上なので、ある程度の差は実力差として自然な範囲です。`;
+      notes.push(`${memberName(worst[0])}さんとは${worst[1].games}戦で差分${sign(Math.round(worst[1].scoreDiff*10)/10)}とやや分が悪いです。${extra}`);
+    }
   }
 
   // 7. ルール別の得意・不得意（2ルール以上のデータがある場合）
@@ -2736,12 +2758,15 @@ function generateInsights(memberId, pcFilter){
     if(bestRule.rule) notes.push(`「${esc(bestRule.rule.name)}」（${bestRule.n}戦・平均${bestRule.avgRank.toFixed(2)}位）が最も好成績です。`);
     if(worstRule.rule && worstRule.ruleId!==bestRule.ruleId) notes.push(`一方「${esc(worstRule.rule.name)}」（${worstRule.n}戦・平均${worstRule.avgRank.toFixed(2)}位）は苦戦気味で、ルールごとの点差・オカの違いが影響している可能性があります。`);
   }
-  // ルールのトビ有無による着眼点の補足
+  // ルール特性（トビ・2飜縛り）による着眼点の補足
   if(rulesWithEnough.length){
     const mainRule = rulesWithEnough[0].rule;
     if(mainRule && mainRule.tobiAri && pcFilter!=='all' && t.bustedCount>0){
       const bustRate = t.bustedCount/s.n*100;
       notes.push(`主に打っている「${esc(mainRule.name)}」はトビありルールです。トビは1回の失点が大きいルールなので、箱下率${bustRate.toFixed(0)}%（${s.n}戦中${t.bustedCount}回）は収支への影響が大きめです。${bustRate>=15?'撤退（ベタオリ）の判断を早める価値がありそうです。':'この水準を保てていれば大崩れのリスクは低めです。'}`);
+    }
+    if(mainRule && pcFilter===3 && mainRule.shibariType==='kanzen'){
+      notes.push(`主に打っている「${esc(mainRule.name)}」は完全2飜縛りです。1飜しかない手を無理に2飜へ寄せようとすると手作りが大きく遅れるルールなので、成績が伸び悩んでいる場合は「役を足すこと」より「最速でテンパイを取ること」を優先できているか、振り返ってみる価値があります。`);
     }
   }
 
@@ -2752,7 +2777,7 @@ function generateInsights(memberId, pcFilter){
   }
 
   if(notes.length===0) notes.push('目立った偏りのない、安定した成績です。');
-  return notes;
+  return { grade: tier?tier.grade:null, gradeDesc: tier?tier.desc:null, avgRank: s.avgRank, baseline, notes };
 }
 
 /* ============ 描画: ランキング ============ */
@@ -3172,11 +3197,21 @@ function renderAnalysis(){
 
   if(UI.showInsights){
     const targetId = UI.analysisMemberId==='ALL' ? (DB.members[0]&&DB.members[0].id) : UI.analysisMemberId;
-    const notes = targetId ? generateInsights(targetId, pcFilter) : [];
+    const result = targetId ? generateInsights(targetId, pcFilter) : { grade:null, notes:[] };
+    const notes = result.notes || [];
     html+=`<div class="card" style="background:linear-gradient(180deg,#f3f0ff,#eae4fb);border:1.5px solid #cdbdf2">
       <h3>✨ AI分析（${targetId?esc(memberName(targetId)):''}）</h3>
-      <div class="small-note" style="margin-bottom:8px">対局データから自動で作成した簡易サマリーです（このアプリ内で完結する統計に基づくもので、外部AIへは送信されません）。</div>
-      ${notes.map(n=>`<div style="padding:6px 0;border-bottom:1px dashed var(--border);font-size:13.5px">・${esc(n)}</div>`).join('')}
+      <div class="small-note" style="margin-bottom:10px">対局データから自動で作成した簡易サマリーです（このアプリ内で完結する統計に基づくもので、外部AIへは送信されません）。</div>`;
+    if(result.grade){
+      const gc = gradeColor(result.grade);
+      html+=`<div style="background:${gc.grad};border-radius:16px;padding:18px;text-align:center;margin-bottom:14px;box-shadow:0 6px 20px -6px ${gc.glow}, inset 0 1px 0 rgba(255,255,255,.25)">
+        <div style="font-size:11.5px;font-weight:700;color:${gc.text};opacity:.85;letter-spacing:1px">${pcFilter}人打ち 平均順位グレード</div>
+        <div style="font-size:56px;font-weight:900;color:${gc.text};line-height:1.1;text-shadow:0 2px 6px rgba(0,0,0,.2);margin:4px 0">${result.grade}</div>
+        <div style="font-size:13px;font-weight:700;color:${gc.text}">平均順位 ${result.avgRank.toFixed(2)}（基準値 ${result.baseline.toFixed(2)}）</div>
+        <div style="font-size:12px;color:${gc.text};opacity:.9;margin-top:6px;line-height:1.5">${esc(result.gradeDesc||'')}</div>
+      </div>`;
+    }
+    html+=`${notes.map(n=>`<div style="padding:6px 0;border-bottom:1px dashed var(--border);font-size:13.5px">・${esc(n)}</div>`).join('')}
     </div>`;
   }
 
