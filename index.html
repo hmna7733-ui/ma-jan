@@ -3014,80 +3014,136 @@ function classifyPlaystyle(stats, houjuuRate){
    今後スタイルを増やしたり条件を変える場合は、この配列に追記・修正すればよい。 */
 const PLAYSTYLE_DEFS = {
   4: [
-    { key:'developing', label:'発展途上型', desc:'レーティングが初期値から大きく下がり、平均着順も伸び悩んでいる、これからの段階です。',
+    // ---- tier0: 発展途上（他に何も当てはまらない場合の土台） ----
+    { key:'developing', tier:0, label:'発展途上型', desc:'レーティングが初期値から大きく下がり、平均着順も伸び悩んでいる、これからの段階です。',
       condText:'レーティング1400未満 かつ 平均着順2.70以上',
       check:(m)=> m.rating<1400 && m.avgRank>=2.70 },
-    { key:'balance', label:'バランス型', desc:'レーティングが高く、平均着順・ラス率ともに優秀な、王道の強者タイプです。どんなルールでも勝ち越せる実力があります。',
+    // ---- tier1: 基本7型 ----
+    { key:'balance', tier:1, label:'バランス型', desc:'レーティングが高く、平均着順・ラス率ともに優秀な、王道の強者タイプです。どんなルールでも勝ち越せる実力があります。',
       condText:'レーティング1650以上 かつ 平均着順2.40未満 かつ ラス率22%以下',
       check:(m)=> m.rating>=1650 && m.avgRank<2.40 && m.lastRate<=22 },
-    { key:'chip', label:'祝儀特化型', desc:'着順そのものより、チップ（祝儀）を稼ぐことに長けたタイプです。一発・裏ドラ・赤牌を絡めた手作りが得意です。',
+    { key:'chip', tier:1, label:'祝儀特化型', desc:'着順そのものより、チップ（祝儀）を稼ぐことに長けたタイプです。一発・裏ドラ・赤牌を絡めた手作りが得意です。',
       condText:'チップ収支（半荘平均）+0.5枚以上',
       check:(m)=> m.chipPerGame!==undefined && m.chipPerGame>=0.5 },
-    { key:'attack', label:'超攻撃型', desc:'トップ率・ラス率がともに高く、大勝ちも大負けもする荒々しいタイプです。攻撃力は本物ですが、着順が安定しません。',
+    { key:'attack', tier:1, label:'超攻撃型', desc:'トップ率・ラス率がともに高く、大勝ちも大負けもする荒々しいタイプです。攻撃力は本物ですが、着順が安定しません。',
       condText:'トップ率28%以上 かつ ラス率28%以上',
       check:(m)=> m.topRate>=28 && m.lastRate>=28 },
-    { key:'defense', label:'守備型', desc:'ラス率が極めて低く、連対率も高い、徹底したリスク管理型です。トップは少なめでも大崩れしません。',
+    { key:'defense', tier:1, label:'守備型', desc:'ラス率が極めて低く、連対率も高い、徹底したリスク管理型です。トップは少なめでも大崩れしません。',
       condText:'ラス率20%以下 かつ トップ率22〜24% かつ 連対率50%以上',
       check:(m)=> m.lastRate<=20 && m.topRate>=22 && m.topRate<=24 && m.rentaiRate>=50 },
-    { key:'overpush', label:'押しすぎ型', desc:'トップもそこそこ取れていますが、それ以上にラスを引いてしまっている、攻め急ぎタイプです。',
+    { key:'overpush', tier:1, label:'押しすぎ型', desc:'トップもそこそこ取れていますが、それ以上にラスを引いてしまっている、攻め急ぎタイプです。',
       condText:'ラス率30%以上 かつ トップ率24%以上 かつ 平均着順2.65以上',
       check:(m)=> m.lastRate>=30 && m.topRate>=24 && m.avgRank>=2.65 },
-    { key:'passive', label:'消極型', desc:'トップ率が低く、2着・3着に挟まれがちで、チップ収支もマイナスの、勝負どころで前に出られていないタイプです。',
+    { key:'passive', tier:1, label:'消極型', desc:'トップ率が低く、2着・3着に挟まれがちで、チップ収支もマイナスの、勝負どころで前に出られていないタイプです。',
       condText:'トップ率20%以下 かつ 2・3着率60%以上 かつ チップ収支マイナス',
-      check:(m)=> m.topRate<=20 && m.rank23Rate>=60 && m.chipPerGame!==undefined && m.chipPerGame<0 }
+      check:(m)=> m.topRate<=20 && m.rank23Rate>=60 && m.chipPerGame!==undefined && m.chipPerGame<0 },
+    // ---- tier2: ウマ・飛ばし特化型（4人打ちは3人打ちの基準を暫定的に流用・要調整） ----
+    { key:'hakoya', tier:2, label:'ハコ屋型', desc:'他家を容赦なく飛ばし、ゲームを強制終了させる破壊力を持つ攻撃型の強者です。',
+      condText:'飛ばし率20%以上 かつ 飛ばされ率10%以下 かつ 平均着順2.30未満',
+      check:(m)=> m.tobashiRate!==undefined && m.tobashiRate>=20 && m.bustedRate<=10 && m.avgRank<2.30 },
+    { key:'shobuken', tier:2, label:'諸刃の剣型', desc:'自分が飛ばすか飛ばされるか、素点が激しく上下するハイリスク・ハイリターンなタイプです。',
+      condText:'飛ばし率20%以上 かつ 飛ばされ率15%以上',
+      check:(m)=> m.tobashiRate!==undefined && m.tobashiRate>=20 && m.bustedRate>=15 },
+    { key:'umasoudori', tier:2, label:'ウマ総取り型', desc:'素点よりも着順を一段階上げる嗅覚に優れた、順位点を効率よく回収するタイプです。',
+      condText:'トップ率26%以上 かつ ラス率20%以下',
+      check:(m)=> m.topRate>=26 && m.lastRate<=20 },
+    { key:'sandbag', tier:2, label:'サンドバッグ型', desc:'他家の高打点に無防備で、あっという間に飛ばされてしまう守備意識の薄いタイプです。',
+      condText:'飛ばされ率20%以上 かつ 飛ばし率12%以下 かつ 平均着順2.60以上',
+      check:(m)=> m.bustedRate!==undefined && m.bustedRate>=20 && m.tobashiRate<=12 && m.avgRank>=2.60 },
+    // ---- tier3: 強者専用（勝ち越している人だけがさらに細分化される上位互換スタイル） ----
+    { key:'toptheif', tier:3, label:'超トップ泥棒型', desc:'圧倒的なアガリ率と打点で他家をねじ伏せ、強引にトップをもぎ取る超攻撃的な強者です。',
+      condText:'トップ率32%以上 かつ ラス率24〜26% かつ 平均着順2.30未満 かつ 平均スコア収支+10以上',
+      check:(m)=> m.topRate>=32 && m.lastRate>=24 && m.lastRate<=26 && m.avgRank<2.30 && m.score!==undefined && m.score>=10 },
+    { key:'kaihi', tier:3, label:'絶対神回避型', desc:'一撃必殺の放銃を極限まで回避し、徹底してラスを拒否する鉄壁の守備的強者です。',
+      condText:'ラス率17%以下 かつ トップ率24〜26% かつ 平均着順2.30未満',
+      check:(m)=> m.lastRate<=17 && m.topRate>=24 && m.topRate<=26 && m.avgRank<2.30 },
+    { key:'soten', tier:3, label:'素点総取り型', desc:'着順自体はそこまで圧倒的ではないものの、勝つときの打点が非常に高く、スコア効率が極めて高いタイプです。',
+      condText:'平均着順2.30〜2.40 かつ 平均スコア収支+6以上',
+      check:(m)=> m.avgRank>=2.30 && m.avgRank<=2.40 && m.score!==undefined && m.score>=6 },
+    { key:'perfect', tier:3, label:'完全無欠型', desc:'トップ率・ラス率のどちらも極めて優秀な、押し引きを完全にマスターした非の打ち所がない最強タイプです。',
+      condText:'トップ率28%以上 かつ ラス率18%以下 かつ 平均着順2.20未満',
+      check:(m)=> m.topRate>=28 && m.lastRate<=18 && m.avgRank<2.20 }
   ],
   3: [
-    { key:'developing', label:'発展途上型', desc:'レーティングが初期値から大きく下がり、平均着順も伸び悩んでいる、これからの段階です。',
+    { key:'developing', tier:0, label:'発展途上型', desc:'レーティングが初期値から大きく下がり、平均着順も伸び悩んでいる、これからの段階です。',
       condText:'レーティング1400未満 かつ 平均着順2.15以上',
       check:(m)=> m.rating<1400 && m.avgRank>=2.15 },
-    { key:'balance', label:'バランス型', desc:'レーティングが高く、平均着順・ラス率ともに優秀な、王道の強者タイプです。攻守のメリハリが完全に取れています。',
+    { key:'balance', tier:1, label:'バランス型', desc:'レーティングが高く、平均着順・ラス率ともに優秀な、王道の強者タイプです。攻守のメリハリが完全に取れています。',
       condText:'レーティング1650以上 かつ 平均着順1.85未満 かつ ラス率28%以下',
       check:(m)=> m.rating>=1650 && m.avgRank<1.85 && m.lastRate<=28 },
-    { key:'chip', label:'祝儀特化型', desc:'着順（ウマ）の減点を恐れず、抜きドラや一発・裏ドラでのチップ獲得を重視するタイプです。',
+    { key:'chip', tier:1, label:'祝儀特化型', desc:'着順（ウマ）の減点を恐れず、抜きドラや一発・裏ドラでのチップ獲得を重視するタイプです。',
       condText:'チップ収支（半荘平均）+0.8枚以上',
       check:(m)=> m.chipPerGame!==undefined && m.chipPerGame>=0.8 },
-    { key:'attack', label:'超攻撃型', desc:'トップ率・ラス率がともに高く、大勝ちも大負けもする荒々しいタイプです。3人打ちらしい打点の高さが武器です。',
+    { key:'attack', tier:1, label:'超攻撃型', desc:'トップ率・ラス率がともに高く、大勝ちも大負けもする荒々しいタイプです。3人打ちらしい打点の高さが武器です。',
       condText:'トップ率38%以上 かつ ラス率35%以上',
       check:(m)=> m.topRate>=38 && m.lastRate>=35 },
-    { key:'defense', label:'守備型', desc:'サンマ特有のツモられ失点や高打点の放銃を徹底的に避ける、堅実なタイプです。',
+    { key:'defense', tier:1, label:'守備型', desc:'サンマ特有のツモられ失点や高打点の放銃を徹底的に避ける、堅実なタイプです。',
       condText:'ラス率28%以下 かつ トップ率30〜32% かつ 平均着順1.95未満',
       check:(m)=> m.lastRate<=28 && m.topRate>=30 && m.topRate<=32 && m.avgRank<1.95 },
-    { key:'overpush', label:'押しすぎ型', desc:'勝負急ぎで、他家の当たり牌を引ききれずに高打点を放銃してしまいがちなタイプです。',
+    { key:'overpush', tier:1, label:'押しすぎ型', desc:'勝負急ぎで、他家の当たり牌を引ききれずに高打点を放銃してしまいがちなタイプです。',
       condText:'ラス率38%以上 かつ トップ率32%以上 かつ 平均着順2.10以上',
       check:(m)=> m.lastRate>=38 && m.topRate>=32 && m.avgRank>=2.10 },
-    { key:'passive', label:'消極型', desc:'サンマの速度感についていけず、ダマテンに構えすぎたり、過剰にオリてツモられ貧乏になっているタイプです。',
+    { key:'passive', tier:1, label:'消極型', desc:'サンマの速度感についていけず、ダマテンに構えすぎたり、過剰にオリてツモられ貧乏になっているタイプです。',
       condText:'トップ率28%以下 かつ 2着率40%以上 かつ チップ収支マイナス',
-      check:(m)=> m.topRate<=28 && m.rank2Rate>=40 && m.chipPerGame!==undefined && m.chipPerGame<0 }
+      check:(m)=> m.topRate<=28 && m.rank2Rate>=40 && m.chipPerGame!==undefined && m.chipPerGame<0 },
+    // ---- tier2: ウマ・飛ばし特化型 ----
+    { key:'hakoya', tier:2, label:'ハコ屋型', desc:'他家を容赦なく飛ばし、ゲームを強制終了させる破壊力を持つ攻撃型の強者です。',
+      condText:'飛ばし率25%以上 かつ 飛ばされ率12%以下 かつ 平均着順1.90未満',
+      check:(m)=> m.tobashiRate!==undefined && m.tobashiRate>=25 && m.bustedRate<=12 && m.avgRank<1.90 },
+    { key:'shobuken', tier:2, label:'諸刃の剣型', desc:'自分が飛ばすか飛ばされるか、素点が激しく上下するハイリスク・ハイリターンなタイプです。',
+      condText:'飛ばし率25%以上 かつ 飛ばされ率20%以上',
+      check:(m)=> m.tobashiRate!==undefined && m.tobashiRate>=25 && m.bustedRate>=20 },
+    { key:'umasoudori', tier:2, label:'ウマ総取り型', desc:'素点よりも着順を一段階上げる嗅覚に優れた、順位点を効率よく回収するタイプです。',
+      condText:'トップ率36%以上 かつ ラス率30%以下',
+      check:(m)=> m.topRate>=36 && m.lastRate<=30 },
+    { key:'sandbag', tier:2, label:'サンドバッグ型', desc:'他家の高打点リーチや染め手に無防備で、あっという間に飛ばされてしまう守備意識の薄いタイプです。',
+      condText:'飛ばされ率25%以上 かつ 飛ばし率15%以下 かつ 平均着順2.15以上',
+      check:(m)=> m.bustedRate!==undefined && m.bustedRate>=25 && m.tobashiRate<=15 && m.avgRank>=2.15 },
+    // ---- tier3: 強者専用 ----
+    { key:'toptheif', tier:3, label:'超トップ泥棒型', desc:'圧倒的なアガリ率と打点で他家をねじ伏せ、強引にトップをもぎ取る超攻撃的な強者です。ラスもそれなりに引きますが、異次元のトップ率で捲ります。',
+      condText:'トップ率42%以上 かつ ラス率32〜34% かつ 平均着順1.90未満 かつ 平均スコア収支+15以上',
+      check:(m)=> m.topRate>=42 && m.lastRate>=32 && m.lastRate<=34 && m.avgRank<1.90 && m.score!==undefined && m.score>=15 },
+    { key:'kaihi', tier:3, label:'絶対神回避型', desc:'サンマ特有の一撃必殺の放銃を極限まで回避し、徹底してラスを拒否する鉄壁の守備的強者です。',
+      condText:'ラス率25%以下 かつ トップ率33〜35% かつ 平均着順1.90未満',
+      check:(m)=> m.lastRate<=25 && m.topRate>=33 && m.topRate<=35 && m.avgRank<1.90 },
+    { key:'soten', tier:3, label:'素点総取り型', desc:'着順自体はそこまで圧倒的ではないものの、数え役満や三倍満を連発するなど、スコア効率が極めて高いタイプです。',
+      condText:'平均着順1.90〜1.95 かつ 平均スコア収支+10以上',
+      check:(m)=> m.avgRank>=1.90 && m.avgRank<=1.95 && m.score!==undefined && m.score>=10 },
+    { key:'perfect', tier:3, label:'完全無欠型', desc:'トップ率・ラス率のどちらも極めて優秀な、サンマの押し引きを完全にマスターした非の打ち所がない最強タイプです。',
+      condText:'トップ率38%以上 かつ ラス率26%以下 かつ 平均着順1.80未満',
+      check:(m)=> m.topRate>=38 && m.lastRate<=26 && m.avgRank<1.80 }
   ]
 };
-/* 判定の優先順位：発展途上→バランス→祝儀特化→残りをトップ率/ラス率の偏りで振り分け（資料の推奨フロー通り） */
-const PLAYSTYLE_PRIORITY_ORDER = ['developing','balance','chip'];
+/* スタイル判定：条件を満たす全スタイルを集め、最も「上位互換」（tierが高い）ものを選ぶ。
+   同tier内で複数該当する場合は、配列内で先に定義されているものを優先する。
+   何も該当しなければ標準型にフォールバックする。 */
 function classifyPlaystyleV2(pcFilter, metrics){
   if(metrics.n!==undefined && metrics.n<20){
     return { key:'insufficient', label:'データ不足', desc:'対局数がまだ20戦未満のため、スタイルはまだ安定しません。対局数が増えると自動で判定されます。' };
   }
   const defs = PLAYSTYLE_DEFS[pcFilter];
   if(!defs) return null;
-  for(const key of PLAYSTYLE_PRIORITY_ORDER){
-    const d = defs.find(x=>x.key===key);
-    if(d && d.check(metrics)) return d;
+  const matched = defs.filter(d=>d.check(metrics));
+  if(matched.length===0){
+    return { key:'standard', tier:1, label:'標準型', desc:'特定の型に偏らない、バランスの取れた標準的なスタッツです。' };
   }
-  const remaining = defs.filter(d=>!PLAYSTYLE_PRIORITY_ORDER.includes(d.key));
-  for(const d of remaining){
-    if(d.check(metrics)) return d;
-  }
-  return { key:'standard', label:'標準型', desc:'特定の型に偏らない、バランスの取れた標準的なスタッツです。' };
+  matched.sort((a,b)=>b.tier-a.tier);
+  return matched[0];
 }
 /* 判定に必要なmetricsをまとめて作るヘルパー（AI分析・メンバー一覧などから共通で使う） */
 function buildPlaystyleMetrics(memberId, pcFilter){
   const s = computeStats(memberId, pcFilter);
   if(!s) return null;
   const c = computeSettlementStats(memberId, pcFilter);
+  const t = computeTobashiStats(memberId, pcFilter);
   const rating = getMemberRating(memberId, pcFilter);
   const chipPerGame = s.n ? c.chipCount/s.n : undefined;
   const rank2Rate = (s.rankCount[1]||0)/s.n*100;
   const rank23Rate = ((s.rankCount[1]||0)+(s.rankCount[2]||0))/s.n*100;
-  return { n:s.n, rating, avgRank:s.avgRank, topRate:s.topRate, lastRate:s.lastRate, rentaiRate:s.rentaiRate, chipPerGame, rank2Rate, rank23Rate };
+  const tobashiRate = s.n ? t.tobashiCount/s.n*100 : undefined;
+  const bustedRate = s.n ? t.bustedCount/s.n*100 : undefined;
+  return { n:s.n, rating, avgRank:s.avgRank, topRate:s.topRate, lastRate:s.lastRate, rentaiRate:s.rentaiRate,
+    chipPerGame, rank2Rate, rank23Rate, tobashiRate, bustedRate, score:s.avgPoint };
 }
 
 function rankTierGrade(avgRank, playerCount){
@@ -4243,17 +4299,22 @@ const Analysis = {
   toggleExternalGameExpand(id){ UI.expandedExternalGameId = (UI.expandedExternalGameId===id) ? null : id; render(); },
   showPlaystyleList(pcFilter, currentKey){
     const defs = PLAYSTYLE_DEFS[pcFilter] || [];
-    const rows = defs.map(d=>{
-      const isCurrent = d.key===currentKey;
-      return `<div style="border:1.5px solid ${isCurrent?'#e6b84a':'var(--border)'};background:${isCurrent?'rgba(230,180,90,.12)':'transparent'};border-radius:10px;padding:10px 12px;margin-bottom:8px">
-        <div class="row" style="justify-content:space-between;align-items:center">
-          <div style="font-weight:800;font-size:14px">${isCurrent?'👉 ':''}${esc(d.label)}</div>
-          ${isCurrent?'<span class="chip" style="background:#e6b84a;color:#3a2905;cursor:default;font-weight:700">現在のタイプ</span>':''}
-        </div>
-        <div style="font-size:12px;color:var(--sub);margin-top:4px">${esc(d.desc)}</div>
-        <div class="small-note" style="margin-top:6px">獲得条件：${esc(d.condText)}</div>
-      </div>`;
-    }).join('');
+    const tierNames = { 0:'発展途上', 1:'基本タイプ', 2:'ウマ・飛ばし特化', 3:'強者専用（上位互換）' };
+    const groups = [3,2,1,0].map(tier=>({ tier, items: defs.filter(d=>d.tier===tier) })).filter(g=>g.items.length);
+    const rows = groups.map(g=>`
+      <div style="font-weight:800;font-size:12px;color:var(--accent);margin:12px 0 6px">${tierNames[g.tier]}</div>
+      ${g.items.map(d=>{
+        const isCurrent = d.key===currentKey;
+        return `<div style="border:1.5px solid ${isCurrent?'#e6b84a':'var(--border)'};background:${isCurrent?'rgba(230,180,90,.12)':'transparent'};border-radius:10px;padding:10px 12px;margin-bottom:8px">
+          <div class="row" style="justify-content:space-between;align-items:center">
+            <div style="font-weight:800;font-size:14px">${isCurrent?'👉 ':''}${esc(d.label)}</div>
+            ${isCurrent?'<span class="chip" style="background:#e6b84a;color:#3a2905;cursor:default;font-weight:700">現在のタイプ</span>':''}
+          </div>
+          <div style="font-size:12px;color:var(--sub);margin-top:4px">${esc(d.desc)}</div>
+          <div class="small-note" style="margin-top:6px">獲得条件：${esc(d.condText)}</div>
+        </div>`;
+      }).join('')}
+    `).join('');
     document.getElementById('modalRoot').innerHTML = `
       <div class="modal-overlay" onclick="if(event.target===this) closeInfoModal()">
         <div class="modal" style="max-width:640px;max-height:85vh;overflow-y:auto">
@@ -4261,7 +4322,7 @@ const Analysis = {
             <h3 style="margin-bottom:0">🎭 打ち手のタイプ一覧（${pcFilter}人打ち）</h3>
             <button class="close-x" onclick="closeInfoModal()">✕</button>
           </div>
-          <div class="small-note" style="margin-bottom:10px">レーティング・平均着順・トップ率・ラス率・連対率・チップ収支から判定しています。判定は「発展途上型→バランス型→祝儀特化型→残りをトップ率/ラス率の偏りで判定」の優先順で行われます。今後、条件や種類が追加・変更される場合があります。</div>
+          <div class="small-note" style="margin-bottom:10px">レーティング・平均着順・トップ率・ラス率・連対率・チップ収支・飛ばし数から判定しています。条件を満たすタイプが複数ある場合は、より上位互換の区分（強者専用＞ウマ・飛ばし特化＞基本タイプ）を優先して表示します。同じタイプが他の人と重複することもあります。今後、条件や種類が追加・変更される場合があります。</div>
           ${rows}
           <button class="btn block" style="margin-top:8px" onclick="closeInfoModal()">閉じる</button>
         </div>
