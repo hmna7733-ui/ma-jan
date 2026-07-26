@@ -2703,15 +2703,17 @@ const PRO_THEORY = {
     { key:'system', label:'点数計算・ルール適応', desc:'符計算の自動化、ルールごとの戦術切り替え' },
     { key:'mental', label:'メンタル・自己管理', desc:'結果論バイアスの排除、感情の遮断、打牌の等速性' }
   ],
-  /* 段階別の視座（4段階）。lastAvoidRate=ラス回避率、houjuuRate=放銃率（他ゲームデータがある場合のみ判定に使用） */
+  /* 段階別の視座（5段階＝総合評価グレードと完全に対応させる）。総合グレードのrawLevel（0〜4）から直接引く。 */
   stages: [
-    { key:'beginner', label:'初級者', view:'自分の手牌のみ（役を作る、アガる）',
+    { key:'beginner', label:'初心者', view:'自分の手牌のみ（役を作る、アガる）',
       trait:'現物・スジ・ベタオリの概念がまだ定着しておらず、放銃率が高止まりしやすい段階' },
-    { key:'intermediate', label:'中級者', view:'自分の手牌＋他家1人（リーチ者）への対応',
+    { key:'novice', label:'見習い', view:'自分の手牌＋他家1人（リーチ者）への対応',
       trait:'現物・スジ・ノーチャンスを使ったベタオリはできるが、鳴きやダマテンへの警戒がまだ手薄な段階' },
-    { key:'advanced', label:'上級者', view:'4人全員の速度比較、ベタオリ、点数状況判断',
+    { key:'normal', label:'普通', view:'複数の他家を意識した押し引き',
+      trait:'現物やスジを使った守備はできるが、点数状況に応じたボーダーの調整はまだ精度が粗い段階' },
+    { key:'advanced', label:'上級', view:'4人全員の速度比較、ベタオリ、点数状況判断',
       trait:'鳴き・ダマテンの速度もケアし、オーラスの点数状況から逆算した手作りができる段階' },
-    { key:'pro', label:'トッププロ', view:'卓全体の未来、確率の歪み、心理誘導',
+    { key:'pro', label:'プロ級', view:'卓全体の未来、確率の歪み、心理誘導',
       trait:'絞り・アシスト・ブラフなど相手の思考をコントロールする引き出しを状況に応じて使い分けられる段階' }
   ],
   /* 押し引きボーダー（子の先制リーチ・平均打点5000〜6000点を基準とした4人打ちの目安） */
@@ -2730,19 +2732,10 @@ const PRO_THEORY = {
   }
 };
 
-/* 利用可能なデータから、現在の打ち手が主にどの段階（初級者〜トッププロ）に近いかを推定する。
-   放銃率など詳細スタッツが無い場合は、ラス回避率・平均順位グレードのみから緩やかに推定する。 */
-function diagnoseStage(lastAvoidRate, avoidBase, tierGrade, houjuuRate){
-  let score = 0; // 0=初級者寄り 〜 3=トッププロ寄り
-  if(lastAvoidRate>=avoidBase) score += 1;
-  if(lastAvoidRate>=avoidBase+8) score += 1;
-  if(['SSS','SS','S'].includes(tierGrade)) score += 1;
-  if(houjuuRate!==undefined && houjuuRate!==null){
-    if(houjuuRate<=13) score += 1;
-    if(houjuuRate<=10) score += 1;
-  }
-  const idx = Math.max(0, Math.min(3, Math.round(score * 3 / (houjuuRate!==undefined?5:3))));
-  return PRO_THEORY.stages[idx];
+/* 段階診断は総合評価グレードのrawLevel（対局数キャップをかける前の、実力そのものを反映したレベル）から直接引く。
+   キャップ中でも「今の実力なら本来どの段階か」を正しく示すため、必ずrawLevelを使うこと。 */
+function stageFromLevel(rawLevel){
+  return PRO_THEORY.stages[Math.max(0, Math.min(4, rawLevel))];
 }
 
 /* ============ 総合評価グレード（初心者〜プロ級の5段階、複数スタッツの総合判定） ============
@@ -2750,7 +2743,12 @@ function diagnoseStage(lastAvoidRate, avoidBase, tierGrade, houjuuRate){
    他ゲームのデータがあれば和了率・放銃率も加味した「総合ベース」のグレード判定。
    対局数が足りない場合は、そのランク相当の対局数までしかグレードが上がらないようキャップする（上振れ防止）。 */
 const GRADE_LEVELS = ['初心者','見習い','普通','上級','プロ級'];
+const GRADE_LETTERS = ['D','C','B','A','S'];
 const GAME_COUNT_CAP_THRESHOLDS = [100,200,300,400]; // レベル1〜4に必要な目安対局数
+const METRIC_LABELS = {
+  rating:'レーティング', score:'平均スコア収支', topRate:'トップ率', lastRate:'ラス率',
+  rentaiRate:'連対率', chip:'チップ収支（半荘平均）', agariRate:'和了率', houjuuRate:'放銃率'
+};
 const GRADE_TABLES = {
   4: {
     rating:     [1500,1650,1800,2000],
@@ -2779,26 +2777,42 @@ function levelHigherBetter(value, thresholds){
 function levelLowerBetter(value, thresholds){
   let lvl=0; thresholds.forEach((t,i)=>{ if(value<t) lvl=i+1; }); return lvl;
 }
+function gradeLetter(level, allMax){
+  // プロ級（level4）で、使用した全指標が例外なくプロ級ラインに達している場合だけSS
+  if(level>=4 && allMax) return 'SS';
+  return GRADE_LETTERS[Math.max(0,Math.min(4,level))];
+}
 /* metrics: {rating, score, topRate, lastRate, rentaiRate, chip, agariRate, houjuuRate, totalGames} のうち
    利用可能なものだけを渡せばよい（undefinedのものは判定から除外される） */
 function computeCompositeGrade(pcFilter, metrics){
   const table = GRADE_TABLES[pcFilter];
   if(!table) return null;
-  const levels = [];
-  if(metrics.rating!==undefined) levels.push(levelHigherBetter(metrics.rating, table.rating));
-  if(metrics.score!==undefined) levels.push(levelHigherBetter(metrics.score, table.score));
-  if(metrics.topRate!==undefined) levels.push(levelHigherBetter(metrics.topRate, table.topRate));
-  if(metrics.lastRate!==undefined) levels.push(levelLowerBetter(metrics.lastRate, table.lastRate));
-  if(metrics.rentaiRate!==undefined) levels.push(levelHigherBetter(metrics.rentaiRate, table.rentaiRate));
-  if(metrics.chip!==undefined) levels.push(levelHigherBetter(metrics.chip, table.chip));
-  if(metrics.agariRate!==undefined) levels.push(levelHigherBetter(metrics.agariRate, table.agariRate));
-  if(metrics.houjuuRate!==undefined) levels.push(levelLowerBetter(metrics.houjuuRate, table.houjuuRate));
-  if(levels.length===0) return null;
+  const breakdown = []; // 詳細ページ用の内訳（何が基準に達していて何が達していないか）
+  const addMetric = (key, value, lower)=>{
+    if(value===undefined) return;
+    const lvl = lower ? levelLowerBetter(value, table[key]) : levelHigherBetter(value, table[key]);
+    breakdown.push({ key, label:METRIC_LABELS[key], value, thresholds:table[key], lowerBetter:!!lower, level:lvl });
+  };
+  addMetric('rating', metrics.rating, false);
+  addMetric('score', metrics.score, false);
+  addMetric('topRate', metrics.topRate, false);
+  addMetric('lastRate', metrics.lastRate, true);
+  addMetric('rentaiRate', metrics.rentaiRate, false);
+  addMetric('chip', metrics.chip, false);
+  addMetric('agariRate', metrics.agariRate, false);
+  addMetric('houjuuRate', metrics.houjuuRate, true);
+  if(breakdown.length===0) return null;
+  const levels = breakdown.map(b=>b.level);
   const rawLevel = Math.round(levels.reduce((a,b)=>a+b,0)/levels.length);
+  const allMax = levels.every(l=>l===4);
   let capLevel = 0;
   GAME_COUNT_CAP_THRESHOLDS.forEach((t,i)=>{ if((metrics.totalGames||0)>=t) capLevel=i+1; });
   const finalLevel = Math.min(rawLevel, capLevel);
-  return { level:finalLevel, label:GRADE_LEVELS[finalLevel], rawLevel, capped: rawLevel>capLevel, capLevel, metricsUsed:levels.length };
+  return {
+    level:finalLevel, label:GRADE_LEVELS[finalLevel], letter:gradeLetter(finalLevel, finalLevel>=4 && allMax),
+    rawLevel, rawLabel:GRADE_LEVELS[rawLevel], rawLetter:gradeLetter(rawLevel, allMax),
+    capped: rawLevel>capLevel, capLevel, metricsUsed:levels.length, breakdown, totalGames:metrics.totalGames||0
+  };
 }
 /* 着順・ラス率などから、ざっくりとした打ち手のタイプ（攻撃寄りか守備寄りか）を推定 */
 function compositeGradeColor(level){
@@ -2963,7 +2977,7 @@ function generateInsights(memberId, pcFilter){
 
     composite = { real:realGrade, game:gameGrade, merged:mergedGrade, mergedN, realN:s.n, gameN: extAgg?extAgg.totalGames:0 };
 
-    if(extAgg) push('neutral', `このアプリの${s.n}戦に、他のゲームのデータ${extAgg.totalGames}戦を合算し、通算${mergedN}戦としてジャン力を判定しています。`);
+    if(extAgg) push('neutral', `このアプリの${s.n}戦に、他のゲームのデータ${extAgg.totalGames}戦を合算し、通算${mergedN}戦として雀力を判定しています。`);
     if(realGrade && realGrade.capped) push('neutral', `※対局数（${s.n}戦）がまだ「${GRADE_LEVELS[realGrade.rawLevel]}」の目安対局数に届いていないため、リアルのグレードは「${realGrade.label}」までのキャップがかかっています（上振れ防止のためです）。`);
 
     // データの信頼度（対局数が少ないと数値がブレやすいため）
@@ -2979,8 +2993,8 @@ function generateInsights(memberId, pcFilter){
     else if(lastAvoidRate>=avoidGood) push('good', `ラス回避率${lastAvoidRate.toFixed(0)}%は基準（${avoidBase}%）を上回っており、優秀な守備力です。`);
     else if(lastAvoidRate<avoidBase-5) push('bad', `ラス回避率${lastAvoidRate.toFixed(0)}%は基準（${avoidBase}%）をやや下回っています。持ち点が厳しい局での撤退（ベタオリ）判断を早めると改善しそうです。`);
 
-    // 段階診断（麻雀の基礎理論：初級者〜トッププロの4段階に今のデータを照らし合わせる）
-    const stage = diagnoseStage(lastAvoidRate, avoidBase, null, extAgg?extAgg.houjuuRate:undefined);
+    // 段階診断（麻雀の基礎理論：初心者〜プロ級の5段階に今のデータを照らし合わせる。対局数キャップの影響を受けない「想定ランク」で判定する）
+    const stage = stageFromLevel(mergedGrade.rawLevel);
     push('neutral', `【段階診断：${stage.label}】現在のデータからは「${stage.view}」という視座に近いと推定されます。${stage.trait}`);
 
     // 攻撃重視型・守備重視型の診断（他ゲームの放銃率があればより精度が上がる）
@@ -2993,23 +3007,23 @@ function generateInsights(memberId, pcFilter){
       }
     }
 
-    // 長期データでの「言い訳排除」診断：サンプルが十分なのに成績が悪い場合、運のせいにできないことを直言する
-    if(mergedN>=50 && composite.merged && composite.merged.level<=1){
-      push('bad', `【${mergedN}戦という長期データからの直言】配牌やツモの偏りは、これだけの試行回数があればほぼ平等に収束しています。それでも総合グレードが「${composite.merged.label}」に留まっているのは、運ではなく「勝負すべき局面での押し引きの基準」か「手作りの速度」のどちらかに、繰り返し起きている根本的な課題がある可能性が高いです。`);
+    // 長期データでの「言い訳排除」診断：サンプルが十分なのに成績が悪い場合、運のせいにできないことを直言する（想定ランク基準）
+    if(mergedN>=50 && composite.merged && composite.merged.rawLevel<=1){
+      push('bad', `【${mergedN}戦という長期データからの直言】配牌やツモの偏りは、これだけの試行回数があればほぼ平等に収束しています。それでも総合グレードが「${composite.merged.rawLabel}」に留まっているのは、運ではなく「勝負すべき局面での押し引きの基準」か「手作りの速度」のどちらかに、繰り返し起きている根本的な課題がある可能性が高いです。`);
     }
 
-    // 3人打ち特有の理論補足（成績が伸び悩んでいる場合のみ）
-    if(pcFilter===3 && composite.merged && composite.merged.level<=2){
+    // 3人打ち特有の理論補足（成績が伸び悩んでいる場合のみ、想定ランク基準）
+    if(pcFilter===3 && composite.merged && composite.merged.rawLevel<=2){
       push('neutral', `【3人打ち理論の補足】${PRO_THEORY.threePlayerNotes.lowScoreCause}`);
     }
 
-    // リアルとゲームの差から見える課題（両方のデータが十分にある場合のみ）
+    // リアルとゲームの差から見える課題（両方のデータが十分にある場合のみ、想定ランク基準）
     if(realGrade && gameGrade && extAgg.totalGames>=10){
-      const diff = realGrade.level - gameGrade.level;
+      const diff = realGrade.rawLevel - gameGrade.rawLevel;
       if(diff>=2){
-        push('bad', `【リアルとゲームの差から見える課題】このアプリでのグレードは「${realGrade.label}」なのに対し、他ゲームでは「${gameGrade.label}」と差があります。身内など固定メンバーの中では通用している打ち方が、初対面の相手や幅広いレベル層には通用しきれていない可能性があります。相手の癖に頼らない、原理原則（牌効率・押し引きボーダー）に基づいた打ち方を意識してみてください。`);
+        push('bad', `【リアルとゲームの差から見える課題】このアプリでの想定ランクは「${realGrade.rawLabel}」なのに対し、他ゲームでは「${gameGrade.rawLabel}」と差があります。身内など固定メンバーの中では通用している打ち方が、初対面の相手や幅広いレベル層には通用しきれていない可能性があります。相手の癖に頼らない、原理原則（牌効率・押し引きボーダー）に基づいた打ち方を意識してみてください。`);
       } else if(diff<=-2){
-        push('good', `【リアルとゲームの差から見える課題】他ゲームでのグレードは「${gameGrade.label}」なのに対し、このアプリでは「${realGrade.label}」とより良い成績です。固定メンバーとの対局で通用している何らかの強み（相手の癖の把握など）があると考えられますが、それが実力そのものの底上げにつながっているかは、他ゲームでの成績が伸びてくるかで判断できます。`);
+        push('good', `【リアルとゲームの差から見える課題】他ゲームでの想定ランクは「${gameGrade.rawLabel}」なのに対し、このアプリでは「${realGrade.rawLabel}」とより良い成績です。固定メンバーとの対局で通用している何らかの強み（相手の癖の把握など）があると考えられますが、それが実力そのものの底上げにつながっているかは、他ゲームでの成績が伸びてくるかで判断できます。`);
       }
       if(extAgg.houjuuRate!==undefined && extAgg.houjuuRate>16 && s.lastRate < (pcFilter===3?35:25)){
         push('bad', `【ゲームデータからしか分からない課題】他ゲームの放銃率${extAgg.houjuuRate.toFixed(1)}%は高めですが、このアプリでのラス率は${s.lastRate.toFixed(0)}%とそれほど悪くありません。これは「放銃はしているが、それでもラスを踏み外していない＝ツモや配牌の助けで結果的に収まっている」可能性を示しており、根本の押し引きの基準はまだ改善の余地があると考えられます。`);
@@ -3525,8 +3539,9 @@ function renderAnalysis(){
         const gc = compositeGradeColor(g.level);
         return `<div class="grow" style="background:${gc.grad};border-radius:14px;padding:12px;text-align:center;box-shadow:0 4px 14px -6px ${gc.glow}, inset 0 1px 0 rgba(255,255,255,.25)">
           <div style="font-size:10.5px;font-weight:700;color:${gc.text};opacity:.85">${label}（${n}戦）</div>
-          <div style="font-size:20px;font-weight:900;color:${gc.text};line-height:1.2;margin:2px 0">${g.label}</div>
-          ${g.capped?`<div style="font-size:10px;font-weight:700;color:${gc.text};opacity:.85">対局数キャップ中</div>`:''}
+          <div style="font-size:30px;font-weight:900;color:${gc.text};line-height:1.1;margin:2px 0">${g.letter}<span style="font-size:10px;font-weight:700;opacity:.85">ランク</span></div>
+          <div style="font-size:11px;font-weight:700;color:${gc.text};opacity:.9">${g.label}</div>
+          ${g.capped?`<div style="font-size:10px;font-weight:700;color:${gc.text};opacity:.85;margin-top:2px">対局数キャップ中（想定：${g.rawLetter}ランク／${g.rawLabel}）</div>`:''}
         </div>`;
       };
       if(hasGame){
@@ -3537,11 +3552,14 @@ function renderAnalysis(){
       }
       const mainGrade = comp.merged || comp.real;
       const gc = compositeGradeColor(mainGrade.level);
-      html+=`<div style="background:${gc.grad};border-radius:16px;padding:18px;text-align:center;margin-bottom:14px;box-shadow:0 6px 20px -6px ${gc.glow}, inset 0 1px 0 rgba(255,255,255,.25)">
+      html+=`<div style="background:${gc.grad};border-radius:16px;padding:18px;text-align:center;margin-bottom:10px;box-shadow:0 6px 20px -6px ${gc.glow}, inset 0 1px 0 rgba(255,255,255,.25)">
         <div style="font-size:11.5px;font-weight:700;color:${gc.text};opacity:.85;letter-spacing:1px">${pcFilter}人打ち ${hasGame?'通算':''}総合グレード</div>
-        <div style="font-size:44px;font-weight:900;color:${gc.text};line-height:1.2;text-shadow:0 2px 6px rgba(0,0,0,.2);margin:4px 0">${mainGrade.label}</div>
-        <div style="font-size:12.5px;font-weight:700;color:${gc.text}">${hasGame?'全'+comp.mergedN+'戦':''}${mainGrade.capped?'　※対局数キャップ中':''}</div>
-      </div>`;
+        <div style="font-size:58px;font-weight:900;color:${gc.text};line-height:1.15;text-shadow:0 2px 6px rgba(0,0,0,.2);margin:4px 0">${mainGrade.letter}<span style="font-size:20px;font-weight:800">ランク</span></div>
+        <div style="font-size:16px;font-weight:800;color:${gc.text}">（${mainGrade.label}）</div>
+        <div style="font-size:12.5px;font-weight:700;color:${gc.text};margin-top:6px">${hasGame?'全'+comp.mergedN+'戦':''}</div>
+        ${mainGrade.capped?`<div style="font-size:12px;font-weight:700;color:${gc.text};margin-top:4px;background:rgba(0,0,0,.15);display:inline-block;padding:3px 10px;border-radius:12px">対局数キャップ中／400戦到達時の想定：${mainGrade.rawLetter}ランク（${mainGrade.rawLabel}）</div>`:''}
+      </div>
+      <button class="btn sm secondary block" style="margin-bottom:14px" onclick='Analysis.showGradeDetail(${JSON.stringify(pcFilter)}, ${JSON.stringify(mainGrade)})'>📋 判定基準の詳細を見る</button>`;
     }
     html+=`${notes.map(n=>{
       if(n.type==='good') return `<div style="padding:8px 10px;margin:6px 0;border-radius:8px;background:rgba(37,99,235,.12);font-size:13.5px;line-height:1.6"><span style="color:#1d4ed8;font-weight:700">🔵 ${esc(n.text)}</span></div>`;
@@ -3817,6 +3835,44 @@ const Analysis = {
   clearOpponent(){ UI.analysisOpponentId=null; render(); },
   toggleOpponentExpand(oid){ UI.expandedOpponentId = (UI.expandedOpponentId===oid) ? null : oid; render(); },
   toggleExternalGameExpand(id){ UI.expandedExternalGameId = (UI.expandedExternalGameId===id) ? null : id; render(); },
+  showGradeDetail(pcFilter, grade){
+    const table = GRADE_TABLES[pcFilter];
+    const rows = (grade.breakdown||[]).map(b=>{
+      const cells = GRADE_LEVELS.map((lv,i)=>{
+        const th = b.thresholds[i-1];
+        let cellText;
+        if(i===0) cellText = b.lowerBetter ? `${b.thresholds[0]}以上` : `${b.thresholds[0]}未満`;
+        else cellText = b.lowerBetter ? `${th}未満` : `${th}以上`;
+        const isCurrent = b.level===i;
+        return `<td style="padding:6px 8px;text-align:center;font-size:11.5px;${isCurrent?'background:var(--accent-light);font-weight:800;border-radius:6px':''}">${cellText}${isCurrent?' ✓':''}</td>`;
+      }).join('');
+      return `<tr>
+        <td style="padding:6px 8px;font-size:12px;font-weight:700;white-space:nowrap">${b.label}<br><span class="small-note">現在値: ${b.value.toFixed(2)}</span></td>
+        ${cells}
+      </tr>`;
+    }).join('');
+    document.getElementById('modalRoot').innerHTML = `
+      <div class="modal-overlay" onclick="if(event.target===this) closeInfoModal()">
+        <div class="modal" style="max-width:640px">
+          <div class="row" style="justify-content:space-between;align-items:center;margin-bottom:10px">
+            <h3 style="margin-bottom:0">📋 判定基準の詳細</h3>
+            <button class="close-x" onclick="closeInfoModal()">✕</button>
+          </div>
+          <div class="small-note" style="margin-bottom:10px">「✓」が付いている欄が、その項目が現在達している段階です。総合グレードは、これらの平均を四捨五入して決めています。対局数キャップにより表示上のランクは下がっていても、この内訳は対局数の影響を受けない「実力そのもの」の判定です。</div>
+          <div style="overflow-x:auto">
+            <table style="width:100%;border-collapse:collapse;font-size:11.5px">
+              <thead><tr>
+                <th style="padding:6px 8px;text-align:left">項目</th>
+                ${GRADE_LEVELS.map(lv=>`<th style="padding:6px 8px;text-align:center;white-space:nowrap">${lv}</th>`).join('')}
+              </tr></thead>
+              <tbody>${rows}</tbody>
+            </table>
+          </div>
+          <div class="small-note" style="margin-top:10px">総合の想定ランク：${grade.rawLetter}ランク（${grade.rawLabel}）　※対局数キャップ適用後の表示：${grade.letter}ランク（${grade.label}）</div>
+          <button class="btn block" style="margin-top:12px" onclick="closeInfoModal()">閉じる</button>
+        </div>
+      </div>`;
+  },
   setPlayerCount(pc){ UI.analysisPlayerCount=pc; render(); },
   toggleInsights(){ UI.showInsights=!UI.showInsights; render(); }
 };
