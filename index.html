@@ -2920,8 +2920,8 @@ function continuousLevel(value, thresholds, lowerBetter, ssLine){
   }
   return 4;
 }
-function gradeLetter(level, ssCount){
-  if(level>=4) return ssCount>=2 ? 'SS' : 'S';
+function gradeLetter(level, isSS){
+  if(level>=4) return isSS ? 'SS' : 'S';
   return GRADE_LETTERS[Math.max(0,Math.min(4,level))];
 }
 /* metrics: {rating, score, topRate, lastRate, rentaiRate, chip, agariRate, houjuuRate, totalGames} のうち
@@ -2957,19 +2957,33 @@ function computeCompositeGrade(pcFilter, metrics){
   }
   if(breakdown.length===0) return null;
   const weightSum = breakdown.reduce((a,b)=>a+b.weight,0);
-  // 連続値（10段階相当の精度）の加重平均で内部的な位置づけを算出し、最後に四捨五入して表示用レベルにする
+  // 連続値（10段階相当の精度）の加重平均で内部的な位置づけを算出する
   const continuousAvg = breakdown.reduce((a,b)=>a+Math.min(b.continuousLevel,4.999)*b.weight,0)/weightSum;
-  const rawLevel = Math.round(continuousAvg);
+  // 見習い(1)〜上級(3)までは通常通りの境界だが、上級→プロ級(S)の壁は3.5ではなく4.2まで厚くし、
+  // 単純な平均の四捨五入だけでSに届かないようにする。
+  let rawLevel;
+  if(continuousAvg>=4.2) rawLevel=4;
+  else if(continuousAvg>=3.5) rawLevel=3;
+  else if(continuousAvg>=2.5) rawLevel=2;
+  else if(continuousAvg>=1.5) rawLevel=1;
+  else rawLevel=0;
+  // 弱点（明確なマイナス項目）の有無をチェック：どれか1項目でも「普通」の下限（2.0）に届いていない場合、
+  // 総合力が伴っていない証拠として、プロ級（S・SS）への到達を上級（A）止まりに制限する。
+  const weakestLevel = Math.min(...breakdown.map(b=>b.continuousLevel));
+  const hasWeakPoint = weakestLevel<2.0;
+  if(hasWeakPoint && rawLevel>=4) rawLevel=3;
   // SSは「1つだけ突出」では成立させず、SSライン到達 or SSラインに近い（プロ級との中間点より上）指標が
-  // 2つ以上ある場合にのみ、総合的な強さの証拠として認める
+  // 2つ以上あり、かつ弱点が無く、かつ総合平均自体もSSに近い（4.6以上）場合にのみ、
+  // 総合的な強さの証拠として認める（S→SSの壁をさらに厚くするため）。
   const ssCount = breakdown.filter(b=>b.nearSS).length;
+  const qualifiesForSS = rawLevel>=4 && !hasWeakPoint && ssCount>=2 && continuousAvg>=4.6;
   let capLevel = 0;
   GAME_COUNT_CAP_THRESHOLDS.forEach((t,i)=>{ if(totalGames>=t) capLevel=i+1; });
   const finalLevel = Math.min(rawLevel, capLevel);
   return {
-    level:finalLevel, label:GRADE_LEVELS[finalLevel], letter:gradeLetter(finalLevel, ssCount),
-    rawLevel, rawLabel:GRADE_LEVELS[rawLevel], rawLetter:gradeLetter(rawLevel, ssCount),
-    capped: rawLevel>capLevel, capLevel, metricsUsed:breakdown.length, breakdown, ssCount, continuousAvg, totalGames
+    level:finalLevel, label:GRADE_LEVELS[finalLevel], letter:gradeLetter(finalLevel, qualifiesForSS),
+    rawLevel, rawLabel:GRADE_LEVELS[rawLevel], rawLetter:gradeLetter(rawLevel, qualifiesForSS),
+    capped: rawLevel>capLevel, capLevel, metricsUsed:breakdown.length, breakdown, ssCount, hasWeakPoint, weakestLevel, continuousAvg, totalGames
   };
 }
 /* 着順・ラス率などから、ざっくりとした打ち手のタイプ（攻撃寄りか守備寄りか）を推定 */
@@ -3049,6 +3063,105 @@ function computeExternalAggregate(extEntries, pc){
 }
 
 /* 対戦相手カードを展開した時に表示する、その相手専用のAI分析（成績コメント・タイプ相性） */
+/* 「まず何をするべき？」用の優先度付きアクションプランを生成する。
+   現在の立ち位置（グレード・弱点）から、優先度の高い課題を最大3つ選び、
+   それぞれに「理由」と「習得した先の未来」を添えて返す。 */
+function generateActionPlan(memberId, pcFilter){
+  if(pcFilter==='all') return [];
+  const s = computeStats(memberId, pcFilter);
+  if(!s || s.n<2) return [{ title:'まずは対局数を増やす', reason:'現在のデータ量ではまだ傾向が安定しません。', future:'10半荘を超えたあたりから、自分の本当の課題が数字にはっきり表れ始めます。', priority:10 }];
+  const t = computeTobashiStats(memberId, pcFilter);
+  const c = computeSettlementStats(memberId, pcFilter);
+  const member = getMember(memberId);
+  const extEntries = (member && member.externalGames && member.externalGames[pcFilter]) || [];
+  const extAgg = computeExternalAggregate(extEntries, pcFilter);
+  const rules = computeRuleBreakdown(memberId, pcFilter);
+  const rulesWithEnough = rules.filter(r=>r.n>=3);
+  const mainRule = rulesWithEnough.length ? [...rulesWithEnough].sort((a,b)=>b.n-a.n)[0].rule : null;
+  const gradeTableKey = resolveGradeTableKey(pcFilter, mainRule);
+  const rating = getMemberRating(memberId, pcFilter);
+  const chipPerGame = s.n ? c.chipCount/s.n : undefined;
+  const mergedTopRate = extAgg ? (s.topRate*s.n + extAgg.topRate*extAgg.totalGames)/(s.n+extAgg.totalGames) : s.topRate;
+  const mergedLastRate = extAgg ? (s.lastRate*s.n + extAgg.lastRate*extAgg.totalGames)/(s.n+extAgg.totalGames) : s.lastRate;
+  const grade = computeCompositeGrade(gradeTableKey, {
+    rating, score:s.avgPoint, chip:chipPerGame, topRate:mergedTopRate, lastRate:mergedLastRate,
+    rentaiRate:s.rentaiRate, agariRate: extAgg?extAgg.agariRate:undefined, houjuuRate: extAgg?extAgg.houjuuRate:undefined,
+    totalGames: s.n+(extAgg?extAgg.totalGames:0)
+  });
+  const nextLabel = grade && grade.rawLevel<4 ? GRADE_LEVELS[grade.rawLevel+1] : 'さらに上のレベル';
+  const lastAvoidRate = 100 - s.lastRate;
+  const avoidBase = pcFilter===3 ? 66.6 : 75.0;
+  const candidates = [];
+
+  if(lastAvoidRate < avoidBase-8){
+    candidates.push({ priority:9, title:'撤退（ベタオリ）判断を早める',
+      reason:`ラス回避率が${lastAvoidRate.toFixed(0)}%と基準（${avoidBase}%）を大きく下回っています。失点の大きい局面で降りきれていないことが、着順・グレード双方の足を引っ張っている可能性が高いです。`,
+      future:`撤退の判断を今より1テンポ早められるようになると、ラス率が下がって平均順位が安定し、総合グレードが「${nextLabel}」へ近づく最短ルートになります。` });
+  }
+  if(extAgg && extAgg.houjuuRate!==undefined && extAgg.houjuuRate>16){
+    candidates.push({ priority:8, title:'押し引きボーダーの見直し',
+      reason:`他ゲームの放銃率が${extAgg.houjuuRate.toFixed(1)}%と目安より高く、打点が足りない手でも無筋を押してしまっている可能性があります。`,
+      future:`「満貫未満の手では無筋を控える」という基準を徹底できれば、放銃率が下がって和銃差が改善し、グレードもワンランク上を狙えるようになります。` });
+  }
+  if(extAgg && extAgg.agariRate!==undefined && extAgg.houjuuRate!==undefined){
+    const wazyuusa = extAgg.agariRate-extAgg.houjuuRate;
+    const wBase = pcFilter===3 ? 12 : 10;
+    if(wazyuusa<wBase-3){
+      candidates.push({ priority:7, title:'和了率と放銃率のバランス改善（和銃差）',
+        reason:`和了率${extAgg.agariRate}%－放銃率${extAgg.houjuuRate}%＝${wazyuusa.toFixed(1)}%と、強者の境界線（${wBase}%）にまだ届いていません。攻撃・守備のどちらかに極端な偏りがある可能性があります。`,
+        future:`和銃差が${wBase}%を超えてくると、長期的に見て負けにくい「勝ち組」の領域に入ります。ここが伸びれば総合グレードの土台そのものが底上げされます。` });
+    }
+  }
+  if(mainRule && mainRule.tobiAri && t.bustedCount>0){
+    const bustRate = t.bustedCount/s.n*100;
+    if(bustRate>=15){
+      candidates.push({ priority:7, title:'トビ（箱下）を防ぐ撤退基準の徹底',
+        reason:`主に打っている「${esc(mainRule.name)}」はトビありルールで、箱下率${bustRate.toFixed(0)}%とやや高めです。トビは1回の失点が非常に大きく、収支への影響が甚大です。`,
+        future:`持ち点が厳しくなった局面で早めに完全ベタオリへ切り替えられれば、大失点のリスクが激減し、収支のブレそのものが小さくなります。` });
+    }
+  }
+  const styleType = classifyPlaystyle(s, extAgg?extAgg.houjuuRate:undefined);
+  if(styleType==='攻撃重視型' || styleType==='超攻撃型'){
+    candidates.push({ priority:6, title:'勝負すべき局面の絞り込み',
+      reason:`打ち手のタイプは「${styleType}」で、攻めの姿勢自体は強みですが、勝負すべきでない愚形・安手でも押してしまっている可能性があります。`,
+      future:`「押すべき手」と「降りるべき手」の境界線がさらに明確になると、攻撃力はそのままに放銃だけが減り、収支の伸びが加速します。` });
+  } else if(styleType==='守備重視型' || styleType==='堅実・守備型'){
+    candidates.push({ priority:6, title:'勝負手でもう一段踏み込む勇気',
+      reason:`打ち手のタイプは「${styleType}」で、守備は堅い一方、満貫クラスの勝負手でも降りすぎている可能性があります。`,
+      future:`「打点が十分ある時は踏み込む」という基準を持てるようになると、守備力はそのままにトップ率・収支が底上げされます。` });
+  }
+  if(rulesWithEnough.length>=2){
+    const worstRule = rulesWithEnough[rulesWithEnough.length-1];
+    if(worstRule.rule && worstRule.n>=5){
+      candidates.push({ priority:4, title:`「${worstRule.rule.name}」への適応`,
+        reason:`他のルールに比べて「${worstRule.rule.name}」（${worstRule.n}戦・平均${worstRule.avgRank.toFixed(2)}位）だけ苦戦しています。ルール特有の点差・オカへの適応がまだ甘い可能性があります。`,
+        future:`得意なルールで身についている判断基準を、このルールの点差・順位点に合わせて調整できれば、打つルールを選ばない安定した実力に変わります。` });
+    }
+  }
+  if(candidates.length===0){
+    candidates.push({ priority:3, title:'今の打ち方の継続と微調整',
+      reason:'目立った弱点は見当たりません。すでに安定した打ち筋ができています。',
+      future:'このまま対局数を重ねてサンプルを増やせば、グレードの信頼度が上がり、次の段階（'+nextLabel+'）への足がかりがより明確になります。' });
+  }
+  candidates.sort((a,b)=>b.priority-a.priority);
+  return candidates.slice(0,3);
+}
+function renderActionPlanHtml(memberId, pcFilter){
+  const plan = generateActionPlan(memberId, pcFilter);
+  return `<div style="margin-top:12px">
+    ${plan.map((p,idx)=>`<div class="rating-card" style="background:linear-gradient(160deg,#0d1a24,#16303f 55%,#0a141c);border:1.5px solid rgba(79,195,221,.45);padding:14px;margin-bottom:10px">
+      <div class="rating-card-icon" style="font-size:56px">${idx===0?'🥇':idx===1?'🥈':'🥉'}</div>
+      <div class="rating-card-shine"></div>
+      <div style="position:relative;z-index:1">
+        <div style="font-size:11px;font-weight:700;color:rgba(255,255,255,.7)">優先度${idx+1}</div>
+        <div style="font-size:16px;font-weight:800;color:#fff;margin:2px 0">${esc(p.title)}</div>
+        <div style="font-size:12px;color:rgba(255,255,255,.85);line-height:1.6;margin-top:6px"><b style="color:#7fd4e8">なぜ：</b>${esc(p.reason)}</div>
+        <div style="font-size:12px;color:rgba(255,243,208,.9);line-height:1.6;margin-top:6px"><b style="color:#f7d774">身についた先：</b>${esc(p.future)}</div>
+      </div>
+    </div>`).join('')}
+  </div>`;
+}
+
 function generateOpponentInsight(memberId, oid, pcFilter){
   const notes = [];
   const push = (type, text)=>notes.push({type, text});
@@ -3108,6 +3221,8 @@ function generateInsights(memberId, pcFilter){
   const extAgg = pcFilter!=='all' ? computeExternalAggregate(extEntries, pcFilter) : null;
 
   let composite = null;
+  let stageResult = null;
+  let styleResult = null;
 
   if(pcFilter!=='all'){
     const rating = getMemberRating(memberId, pcFilter);
@@ -3157,15 +3272,15 @@ function generateInsights(memberId, pcFilter){
 
     // 段階診断（麻雀の基礎理論：初心者〜プロ級の5段階に今のデータを照らし合わせる。対局数キャップの影響を受けない「想定ランク」で判定する）
     const stage = stageFromLevel(mergedGrade.rawLevel);
-    push('neutral', `【段階診断：${stage.label}】現在のデータからは「${stage.view}」という視座に近いと推定されます。${stage.trait}`);
+    stageResult = { label: stage.label, text: `現在のデータからは「${stage.view}」という視座に近いと推定されます。${stage.trait}` };
 
     // 攻撃重視型・守備重視型の診断（他ゲームの放銃率があればより精度が上がる）
     const styleType = classifyPlaystyle(s, extAgg?extAgg.houjuuRate:undefined);
     if(styleType){
       if(styleType==='攻撃重視型' || styleType==='超攻撃型'){
-        push('neutral', `【打ち手のタイプ：${styleType}】${extAgg&&extAgg.houjuuRate!==undefined?`放銃率${extAgg.houjuuRate.toFixed(1)}%とトップ率の高さから、`:''}高打点・トップを積極的に狙いにいくタイプと推定されます。攻めの姿勢自体は強みですが、根本課題として「勝負すべきでない愚形・安手での無筋押し」が混ざっていないか、押し引きボーダーと照らして見直す価値があります。`);
+        styleResult = { label: styleType, text: `${extAgg&&extAgg.houjuuRate!==undefined?`放銃率${extAgg.houjuuRate.toFixed(1)}%とトップ率の高さから、`:''}高打点・トップを積極的に狙いにいくタイプと推定されます。攻めの姿勢自体は強みですが、根本課題として「勝負すべきでない愚形・安手での無筋押し」が混ざっていないか、押し引きボーダーと照らして見直す価値があります。` };
       } else if(styleType==='守備重視型' || styleType==='堅実・守備型'){
-        push('neutral', `【打ち手のタイプ：${styleType}】${extAgg&&extAgg.houjuuRate!==undefined?`放銃率${extAgg.houjuuRate.toFixed(1)}%の低さから、`:''}失点を避ける技術は高い一方、根本課題として「勝負すべき局面でも降りすぎている（先制を取り切れていない）」可能性があります。満貫以上の手が入った時は、もう一段踏み込む意識を持てると収支が伸びそうです。`);
+        styleResult = { label: styleType, text: `${extAgg&&extAgg.houjuuRate!==undefined?`放銃率${extAgg.houjuuRate.toFixed(1)}%の低さから、`:''}失点を避ける技術は高い一方、根本課題として「勝負すべき局面でも降りすぎている（先制を取り切れていない）」可能性があります。満貫以上の手が入った時は、もう一段踏み込む意識を持てると収支が伸びそうです。` };
       }
     }
 
@@ -3264,7 +3379,7 @@ function generateInsights(memberId, pcFilter){
   }
 
   if(notes.length===0) push('neutral', '目立った偏りのない、安定した成績です。');
-  return { composite, notes };
+  return { composite, notes, stageResult, styleResult };
 }
 
 /* ============ 描画: ランキング ============ */
@@ -3726,11 +3841,35 @@ function renderAnalysis(){
         <button class="btn sm secondary grow" onclick="Analysis.showStageRoadmap()">📖 成長ロードマップ</button>
       </div>`;
     }
+    if(result.stageResult){
+      html+=`<div class="rating-card" style="background:linear-gradient(160deg,#1a1440,#2d1f6b 55%,#120d33);border:1.5px solid rgba(139,122,232,.5);padding:16px;margin-bottom:12px">
+        <div class="rating-card-icon" style="font-size:70px">🧭</div>
+        <div class="rating-card-shine"></div>
+        <div style="position:relative;z-index:1">
+          <div style="font-size:11.5px;font-weight:700;color:rgba(255,255,255,.75);letter-spacing:1px">段階診断</div>
+          <div style="font-size:24px;font-weight:900;color:#fff;margin:2px 0">${esc(result.stageResult.label)}</div>
+          <div style="font-size:12.5px;color:rgba(255,255,255,.9);line-height:1.6;margin-top:4px">${esc(result.stageResult.text)}</div>
+        </div>
+      </div>`;
+    }
+    if(result.styleResult){
+      html+=`<div class="rating-card" style="background:linear-gradient(160deg,#1a0d05,#2b1207 55%,#140803);border:1.5px solid rgba(230,180,90,.5);padding:16px;margin-bottom:14px">
+        <div class="rating-card-icon" style="font-size:70px">🎭</div>
+        <div class="rating-card-shine"></div>
+        <div style="position:relative;z-index:1">
+          <div style="font-size:11.5px;font-weight:700;color:rgba(255,255,255,.75);letter-spacing:1px">打ち手のタイプ</div>
+          <div style="font-size:24px;font-weight:900;color:#fff3d0;margin:2px 0">${esc(result.styleResult.label)}</div>
+          <div style="font-size:12.5px;color:rgba(255,243,208,.92);line-height:1.6;margin-top:4px">${esc(result.styleResult.text)}</div>
+        </div>
+      </div>`;
+    }
     html+=`${notes.map(n=>{
       if(n.type==='good') return `<div style="padding:8px 10px;margin:6px 0;border-radius:8px;background:rgba(37,99,235,.12);font-size:13.5px;line-height:1.6"><span style="color:#1d4ed8;font-weight:700">🔵 ${esc(n.text)}</span></div>`;
       if(n.type==='bad') return `<div style="padding:8px 10px;margin:6px 0;border-radius:8px;background:rgba(220,38,38,.12);font-size:13.5px;line-height:1.6"><span style="color:#b91c1c;font-weight:700">🔴 ${esc(n.text)}</span></div>`;
       return `<div style="padding:6px 0;border-bottom:1px dashed var(--border);font-size:13.5px">・${esc(n.text)}</div>`;
     }).join('')}
+    <button class="btn block" style="margin-top:14px" onclick="Analysis.showActionPlan(${JSON.stringify(targetId)}, ${JSON.stringify(pcFilter)})">🎯 まず何をするべき？</button>
+    ${UI.actionPlanFor===targetId+'_'+pcFilter ? renderActionPlanHtml(targetId, pcFilter) : ''}
     </div>`;
   }
 
@@ -4000,6 +4139,11 @@ const Analysis = {
   clearOpponent(){ UI.analysisOpponentId=null; render(); },
   toggleOpponentExpand(oid){ UI.expandedOpponentId = (UI.expandedOpponentId===oid) ? null : oid; render(); },
   toggleExternalGameExpand(id){ UI.expandedExternalGameId = (UI.expandedExternalGameId===id) ? null : id; render(); },
+  showActionPlan(targetId, pcFilter){
+    const key = targetId+'_'+pcFilter;
+    UI.actionPlanFor = (UI.actionPlanFor===key) ? null : key;
+    render();
+  },
   showStageRoadmap(){
     const sections = MAHJONG_ROADMAP.map(s=>`
       <div style="border:1px solid var(--border);border-radius:12px;padding:14px;margin-bottom:12px">
@@ -4043,7 +4187,7 @@ const Analysis = {
       const ssMark = b.ssHit?' 🌟':(b.nearSS?' ✨':'');
       const ssCell = `<td style="padding:6px 8px;text-align:center;font-size:11.5px;background:${ssBg};font-weight:${b.ssHit?800:(b.nearSS?700:600)};border-radius:6px;color:#3a2905">${ssCellText}${ssMark}</td>`;
       return `<tr>
-        <td style="padding:6px 8px;font-size:12px;font-weight:700;white-space:nowrap">${b.label}<br><span class="small-note">現在値: ${b.value.toFixed(2)}　重み:${b.weight}</span></td>
+        <td style="padding:6px 8px;font-size:12px;font-weight:700;white-space:nowrap">${b.label}<br><span class="small-note">現在値: ${b.value.toFixed(2)}</span></td>
         ${cells}
         ${ssCell}
       </tr>`;
