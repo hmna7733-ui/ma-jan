@@ -2633,40 +2633,79 @@ function pieChartHtml(rankCount, n, maxRank, size){
 }
 
 /* 簡易ルールベースの分析コメント（AI分析：ローカルで完結する統計サマリー） */
+/* 平均順位のグレード判定（Web上の実データ・天鳳/雀魂の統計をもとにした目安）
+   3人打ちは基準値2.00、4人打ちは基準値2.50 */
+function rankTierGrade(avgRank, playerCount){
+  const table3 = [
+    [1.80,'SSS','異常な数値です。歴史的な超上振れか、飛び抜けた実力を持っています。'],
+    [1.85,'SS','鳳凰卓・雀魂の魂天クラスに匹敵する、トップ層レベルの数字です。'],
+    [1.90,'S','文句なしの勝ち組です。中級者環境なら無双できる実力です。'],
+    [1.95,'A','優秀な成績です。上級者環境でも十分勝ち越せる水準です。'],
+    [2.00,'B','平均（2.00）よりわずかに良く、着実に勝ち越しています。'],
+    [2.05,'C','平均的な実力です。着順が拮抗しています。'],
+    [2.10,'D','やや苦戦気味です。放銃率やベタオリの判断を見直す余地がありそうです。'],
+    [Infinity,'E','負け越しが目立ちます。まずは全ツッパを控え、守備を意識してみましょう。']
+  ];
+  const table4 = [
+    [2.30,'SSS','驚異的な数値です。歴史的な超上振れか、飛び抜けた実力を持っています。'],
+    [2.35,'SS','天鳳の鳳凰卓クラスでトップを争えるレベルです。'],
+    [2.40,'S','高段位レベルの強さです。安定してポイントを増やせています。'],
+    [2.45,'A','明確な勝ち組です。打てば打つほど得をする水準です。'],
+    [2.50,'B','平均（2.50）よりわずかに良く、しっかり勝ち越しています。'],
+    [2.55,'C','平均的な実力です。実力が拮抗しているか、守備に課題があるかもしれません。'],
+    [2.60,'D','負けが先行しています。ラス回避を徹底的に意識してみましょう。'],
+    [Infinity,'E','厳しい状況です。手役狙いすぎや無防備な放銃がないか見直してみましょう。']
+  ];
+  const table = playerCount===3 ? table3 : table4;
+  for(const [threshold, grade, desc] of table){
+    if(avgRank < threshold) return {grade, desc};
+  }
+  return {grade:'E', desc:table[table.length-1][2]};
+}
+
 function generateInsights(memberId, pcFilter){
   const s = computeStats(memberId, pcFilter);
   if(!s || s.n<2) return ['対局数がもう少し増えると、傾向が見えてきます（目安は10半荘以上）。'];
   const notes=[];
   const maxRank = s.maxRank;
-  const baseline = (maxRank+1)/2; // 4人打ちなら2.5、3人打ちなら2.0が期待値
+  const baseline = (maxRank+1)/2; // 4人打ちなら2.5、3人打ちなら2.0が基準値
   const secondRate = (s.rankCount[1]||0)/s.n*100;
   const t = computeTobashiStats(memberId, pcFilter);
+  const c = computeSettlementStats(memberId, pcFilter);
 
   if(pcFilter!=='all'){
-    // 1. 総合評価：平均順位を期待値（4人打ち2.5/3人打ち2.0）と比較
-    const rankDiff = baseline - s.avgRank;
-    if(rankDiff>=0.3) notes.push(`平均順位${s.avgRank.toFixed(2)}は期待値（${baseline.toFixed(1)}）を${rankDiff.toFixed(2)}上回る好成績です。着順を安定して稼げています。`);
-    else if(rankDiff<=-0.3) notes.push(`平均順位${s.avgRank.toFixed(2)}は期待値（${baseline.toFixed(1)}）を${Math.abs(rankDiff).toFixed(2)}下回っています。着順を落ち着かせる余地がありそうです。`);
-    else notes.push(`平均順位${s.avgRank.toFixed(2)}は期待値（${baseline.toFixed(1)}）とほぼ同水準で、標準的な着順分布です。`);
+    // 1. 平均順位のグレード判定（3人打ち基準2.00／4人打ち基準2.50の実データベース）
+    const tier = rankTierGrade(s.avgRank, pcFilter);
+    notes.push(`【${pcFilter}人打ち 平均順位グレード：${tier.grade}】平均順位${s.avgRank.toFixed(2)}（基準値${baseline.toFixed(2)}）。${tier.desc}`);
 
-    // 2. ハイリスク／安定型の判定：トップ率とラス率の両方が高いか、両方低いか
-    if(s.topRate>=35 && s.lastRate>=35){
-      notes.push(`トップ率${s.topRate.toFixed(0)}%・ラス率${s.lastRate.toFixed(0)}%とどちらも高く、勝つ時は大きく勝つが着順を落とす時も多い「ハイリスク・ハイリターン型」の分布です。トップ争い以外の局面での被弾を抑えられると、より安定した収支につながりそうです。`);
-    } else if(s.topRate<20 && s.lastRate<20 && secondRate>=35){
-      notes.push(`2位率${secondRate.toFixed(0)}%が突出しており、トップ率${s.topRate.toFixed(0)}%・ラス率${s.lastRate.toFixed(0)}%はともに低めです。大きく崩れない安定感がある一方、勝ちきれずに2位止まりになりやすい傾向が見えます。ここぞという局面での押し引きが鍵になりそうです。`);
-    } else if(s.topRate>=30 && s.lastRate<20){
-      notes.push(`トップ率${s.topRate.toFixed(0)}%に対しラス率${s.lastRate.toFixed(0)}%と低く、勝ち切りつつ大きく崩れない理想的なバランスです。`);
-    }
+    // 2. データの信頼度（対局数が少ないと数値がブレやすいため）
+    if(s.n<15) notes.push(`※現在${s.n}戦のデータです。麻雀は運の要素が大きいため、対局数が少ないうちは数値が大きくブレます。まだ参考値程度に見てください。`);
+    else if(s.n<50) notes.push(`※現在${s.n}戦のデータです。傾向は見え始めていますが、実力を正確に測るにはもう少し対局数があるとより信頼できます。`);
 
-    // 3. 箱下（トビ）率
-    if(t.bustedCount>0){
-      const bustRate = t.bustedCount/s.n*100;
-      if(bustRate>=15) notes.push(`箱下率${bustRate.toFixed(0)}%（${s.n}戦中${t.bustedCount}回）とやや高めです。持ち点が0付近に近づいた局面での撤退判断を早めると、収支の下振れを抑えられそうです。`);
-      else notes.push(`箱下は${s.n}戦中${t.bustedCount}回（${bustRate.toFixed(0)}%）に留まっており、大崩れは少ない方です。`);
+    // 3. ラス回避率の評価（4人打ち基準75%／3人打ち基準66.6%の実データベース）
+    const lastAvoidRate = 100 - s.lastRate;
+    const avoidBase = pcFilter===3 ? 66.6 : 75.0;
+    const avoidGreat = pcFilter===3 ? 73 : 80;
+    const avoidGood = pcFilter===3 ? 70 : 78;
+    if(lastAvoidRate>=avoidGreat) notes.push(`ラス回避率${lastAvoidRate.toFixed(0)}%は基準（${avoidBase}%）を大きく上回る、鉄壁クラスの守備力です。`);
+    else if(lastAvoidRate>=avoidGood) notes.push(`ラス回避率${lastAvoidRate.toFixed(0)}%は基準（${avoidBase}%）を上回っており、優秀な守備力です。`);
+    else if(lastAvoidRate<avoidBase-5) notes.push(`ラス回避率${lastAvoidRate.toFixed(0)}%は基準（${avoidBase}%）をやや下回っています。持ち点が厳しい局での撤退（ベタオリ）判断を早めると改善しそうです。`);
+
+    // 4. スタイル診断：平均順位・ラス回避率・収支を組み合わせたタイプ判定
+    const scoreGood = s.totalPoint>0;
+    const moneyGood = c.moneyTotal>0;
+    if(['SSS','SS','S','A'].includes(tier.grade)){
+      if(lastAvoidRate<avoidBase && scoreGood){
+        notes.push(`【スタイル診断：超攻撃型】着順は良いもののラス回避率は基準よりやや低め。多少のラスを恐れず高打点・トップを狙いにいく、攻撃的なタイプです。現在のルールと相性が良ければこのままでも強いですが、致命的な放銃だけは注意しておきたいところです。`);
+      } else if(lastAvoidRate>=avoidGood && !scoreGood){
+        notes.push(`【スタイル診断：堅実・守備型】ラス回避率は高い一方でスコアは伸び悩み気味。失点を防ぐ技術は高いので、勝負どころでもう一段攻める意識を持てると、着順以上に収支が伸びそうです。`);
+      } else if(tier.grade!=='E' && !moneyGood && c.moneyTotal<0){
+        notes.push(`【スタイル診断：着順は良いが収支が伸びない型】着順自体は悪くないのに、精算ベースの収支はマイナスです。チップの被弾や放銃による失点が響いている可能性があるので、勝負手での押し引きラインを見直すと収支が改善するかもしれません。`);
+      }
     }
   }
 
-  // 4. 直近の調子（直近5戦 vs 通算）
+  // 5. 直近の調子（直近5戦 vs 通算）
   if(s.games.length>=8){
     const sorted=[...s.games].sort((a,b)=>a.date.localeCompare(b.date));
     const recent=sorted.slice(-5);
@@ -2677,7 +2716,7 @@ function generateInsights(memberId, pcFilter){
     else if(diff<=-0.4) notes.push(`直近5戦の平均順位は${recentAvgRank.toFixed(2)}（平均ポイント${sign(Math.round(recentAvgPoint*10)/10)}）で、通算よりやや落ちています。疲れや対面の変化がないか振り返ってみてください。`);
   }
 
-  // 5. 対戦相手：最も分が良い相手・悪い相手（4戦以上のデータがある相手のみ）
+  // 6. 対戦相手：最も分が良い相手・悪い相手（4戦以上のデータがある相手のみ）
   const opp = computeHeadToHead(memberId, pcFilter);
   const oppEntries = Object.entries(opp).filter(([,o])=>o.games>=4);
   if(oppEntries.length){
@@ -2688,7 +2727,7 @@ function generateInsights(memberId, pcFilter){
     if(worst[1].scoreDiff<0 && worst[0]!==best[0]) notes.push(`${memberName(worst[0])}さんとは${worst[1].games}戦で差分${sign(Math.round(worst[1].scoreDiff*10)/10)}とやや分が悪く、対面を意識した打ち回しが有効かもしれません。`);
   }
 
-  // 6. ルール別の得意・不得意（2ルール以上のデータがある場合）
+  // 7. ルール別の得意・不得意（2ルール以上のデータがある場合）
   const rules = computeRuleBreakdown(memberId, pcFilter);
   const rulesWithEnough = rules.filter(r=>r.n>=3);
   if(rulesWithEnough.length>=2){
@@ -2697,9 +2736,16 @@ function generateInsights(memberId, pcFilter){
     if(bestRule.rule) notes.push(`「${esc(bestRule.rule.name)}」（${bestRule.n}戦・平均${bestRule.avgRank.toFixed(2)}位）が最も好成績です。`);
     if(worstRule.rule && worstRule.ruleId!==bestRule.ruleId) notes.push(`一方「${esc(worstRule.rule.name)}」（${worstRule.n}戦・平均${worstRule.avgRank.toFixed(2)}位）は苦戦気味で、ルールごとの点差・オカの違いが影響している可能性があります。`);
   }
+  // ルールのトビ有無による着眼点の補足
+  if(rulesWithEnough.length){
+    const mainRule = rulesWithEnough[0].rule;
+    if(mainRule && mainRule.tobiAri && pcFilter!=='all' && t.bustedCount>0){
+      const bustRate = t.bustedCount/s.n*100;
+      notes.push(`主に打っている「${esc(mainRule.name)}」はトビありルールです。トビは1回の失点が大きいルールなので、箱下率${bustRate.toFixed(0)}%（${s.n}戦中${t.bustedCount}回）は収支への影響が大きめです。${bustRate>=15?'撤退（ベタオリ）の判断を早める価値がありそうです。':'この水準を保てていれば大崩れのリスクは低めです。'}`);
+    }
+  }
 
-  // 7. 収支効率（1戦あたりの金額）
-  const c = computeSettlementStats(memberId, pcFilter);
+  // 8. 収支効率（1戦あたりの金額）
   if(c.moneyTotal!==0 && s.n>0){
     const perGame = c.moneyTotal/s.n;
     notes.push(`精算ベースでの1戦あたり収支は${sign(Math.round(perGame))}Pです。`);
