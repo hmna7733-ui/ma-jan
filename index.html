@@ -2887,6 +2887,11 @@ function renderRanking(){
       </div>`;
     if(!adminCollapsed){
       html += `<div class="small-note" style="margin:10px 0">この機能は管理者権限を持つアカウントにのみ表示されています。ここで行った名前の統合は、ランキングを見る全アカウントに反映され、統合先と同じ名前のメンバーがこのアカウントにいれば、そのメンバーの別名にも自動で追加されます。</div>
+      <div style="border:1.5px solid #c0392b;border-radius:12px;padding:12px;margin-bottom:14px;background:#fdecea">
+        <div style="font-weight:700;color:#c0392b;margin-bottom:6px">⚠️ 現在の履歴をそのまま反映</div>
+        <div class="small-note" style="margin-bottom:8px">既存のランキングデータ（対局・精算書）をすべて破棄し、代わりにこの端末に保存されているデータだけでランキングを作り直します。他のアカウント・端末のデータを消してしまった時などの緊急復旧用です。反映後は、他のアカウントも今まで通りデータを送信できます。</div>
+        <button class="btn sm danger block" onclick="Ranking.resetGlobalRankingFromLocal()">この端末のデータで作り直す</button>
+      </div>
       <div class="field-wrap"><label class="field">統合する名前（この名前を→に変える）</label>
         <select onchange="Ranking.updateAliasForm('from', this.value)">
           <option value="">選択してください</option>
@@ -2910,7 +2915,13 @@ function renderRanking(){
 
       ${(()=>{
         const stCollapsed = isSectionCollapsed('adminSettlements');
-        const settlements = (UI.rankingSettlementData||[]).slice().sort((a,b)=>(b.date||'').localeCompare(a.date||''));
+        const settlements = (UI.rankingSettlementData||[]).slice().sort((a,b)=>{
+          const dateCmp = (b.date||'').localeCompare(a.date||'');
+          if(dateCmp!==0) return dateCmp;
+          const at = (a.updatedAt && a.updatedAt.toMillis) ? a.updatedAt.toMillis() : 0;
+          const bt = (b.updatedAt && b.updatedAt.toMillis) ? b.updatedAt.toMillis() : 0;
+          return bt-at;
+        });
         const groupByCreator = UI.adminSettlementGroupByCreator;
         let inner = `<div class="row" style="justify-content:space-between;align-items:center;cursor:pointer;margin-top:14px" onclick="toggleSectionCollapse('adminSettlements')">
           <div class="section-title" style="margin:0">全精算書（${settlements.length}件）</div>
@@ -2926,11 +2937,10 @@ function renderRanking(){
             const names = Object.keys(st.perMemberByName||{});
             return `<div style="padding:7px 0;border-bottom:1px solid var(--border);font-size:12px">
               <div class="row" style="justify-content:space-between;align-items:center;cursor:pointer" onclick="Ranking.toggleAdminSettlementExpand('${st.id}')">
-                <span>${esc(st.date||'')} ・ ${esc(st.ruleName||'')} ・ ${names.map(esc).join('・')}</span>
+                <span>${esc(st.date||'')} ・ ${esc(st.ruleName||'')} ・ ${names.map(esc).join('・')} ・ 製作者:${esc(st.creatorName||'不明')}</span>
                 <button class="btn sm danger" onclick="event.stopPropagation();Ranking.deleteGlobalSettlement('${st.id}')">削除</button>
               </div>
               ${expanded?`<div class="small-note" style="margin-top:6px">
-                作成者: ${esc(st.creatorName||'不明')}<br>
                 ${names.map(n=>{ const v=st.perMemberByName[n]||{}; return `${esc(n)}：スコア${sign(Math.round((v.scorePoint||0)*10)/10)}・チップ${sign(v.chipCount||0)}枚・収支${sign(Math.round(v.moneyTotal||0))}P`; }).join('<br>')}
               </div>`:''}
             </div>`;
@@ -2952,7 +2962,13 @@ function renderRanking(){
 
       ${(()=>{
         const gCollapsed = isSectionCollapsed('adminGames');
-        const games = (UI.rankingData||[]).slice().sort((a,b)=>(b.date||'').localeCompare(a.date||''));
+        const games = (UI.rankingData||[]).slice().sort((a,b)=>{
+          const dateCmp = (b.date||'').localeCompare(a.date||'');
+          if(dateCmp!==0) return dateCmp;
+          const at = (a.updatedAt && a.updatedAt.toMillis) ? a.updatedAt.toMillis() : 0;
+          const bt = (b.updatedAt && b.updatedAt.toMillis) ? b.updatedAt.toMillis() : 0;
+          return bt-at;
+        });
         let inner = `<div class="row" style="justify-content:space-between;align-items:center;cursor:pointer;margin-top:14px" onclick="toggleSectionCollapse('adminGames')">
           <div class="section-title" style="margin:0">全対局データ（${games.length}件）</div>
           <span style="font-size:16px">${gCollapsed?'▸':'▾'}</span>
@@ -3051,7 +3067,34 @@ const Ranking = {
   },
   toggleAdminGameExpand(id){ UI.adminExpandedGameId = (UI.adminExpandedGameId===id) ? null : id; render(); },
   toggleAdminSettlementExpand(id){ UI.adminExpandedSettlementId = (UI.adminExpandedSettlementId===id) ? null : id; render(); },
-  setAdminSettlementGrouping(byCreator){ UI.adminSettlementGroupByCreator = byCreator; render(); }
+  setAdminSettlementGrouping(byCreator){ UI.adminSettlementGroupByCreator = byCreator; render(); },
+  resetGlobalRankingFromLocal(){
+    if(!UI.isAdmin || !currentUser) return;
+    showConfirmModal(
+      '⚠️ 既存のランキングデータを破棄して作り直しますか？',
+      '現在ランキングに登録されている全ての対局・全ての精算書データがいったんすべて削除され、代わりにこの端末（今ログイン中のアカウント）に保存されている対局・精算表データだけでランキングを作り直します。他の場所から集めたデータや、この端末にない古いデータは失われます。この操作は元に戻せません。',
+      async ()=>{
+        renderInfoModal('処理中です', 'データを反映しています。しばらくそのままお待ちください。');
+        try{
+          const gamesSnap = await fbDb.collection('mahjong_global_games').get();
+          const stSnap = await fbDb.collection('mahjong_global_settlements').get();
+          await Promise.all(gamesSnap.docs.map(d=>d.ref.delete().catch(e=>console.error(e))));
+          await Promise.all(stSnap.docs.map(d=>d.ref.delete().catch(e=>console.error(e))));
+          DB.history.forEach(s=>{ if(!s.globalId) s.globalId = computeSessionFingerprint(s); });
+          DB.settlements.forEach(s=>{ if(!s.globalId) s.globalId = computeSettlementFingerprint(s); });
+          persist('history'); persist('settlements');
+          await Promise.all(DB.history.map(s=>{ const rule=getRule(s.ruleId); return Promise.resolve(pushSessionToGlobalRanking(s, rule)); }));
+          await Promise.all(DB.settlements.map(st=>{ const rule=getRule(st.ruleId); return Promise.resolve(pushSettlementToGlobalRanking(st, rule)); }));
+          await loadRankingData();
+          renderInfoModal('反映しました', `この端末の対局${DB.history.length}件・精算表${DB.settlements.length}件でランキングを作り直しました。`);
+        }catch(e){
+          console.error(e);
+          renderInfoModal('失敗しました', firestoreErrorMessage(e, 'mahjong_global_games'));
+        }
+      },
+      '実行する（既存データを破棄）'
+    );
+  }
 };
 
 function renderAnalysis(){
@@ -3141,11 +3184,11 @@ function renderAnalysis(){
       const s3all = pcFilter==='all' ? computeStats(UI.analysisMemberId, 3) : null;
       const s4all = pcFilter==='all' ? computeStats(UI.analysisMemberId, 4) : null;
       const ratingHtml = pcFilter==='all'
-        ? `<div class="row" style="gap:10px;margin-bottom:14px">
+        ? `<div class="row" style="gap:10px;margin-bottom:6px">
             ${s3all?ratingCardHtml(getMemberRating(UI.analysisMemberId,3),3):''}
             ${s4all?ratingCardHtml(getMemberRating(UI.analysisMemberId,4),4):''}
-          </div>`
-        : `<div class="row" style="margin-bottom:14px">${ratingCardHtml(getMemberRating(UI.analysisMemberId,pcFilter),pcFilter)}</div>`;
+          </div><div class="small-note" style="margin-bottom:14px">※このデバイスに記録されているデータのみでの数字です。全アカウント共有の数字は「ランキング」タブでご確認ください。</div>`
+        : `<div class="row" style="margin-bottom:6px">${ratingCardHtml(getMemberRating(UI.analysisMemberId,pcFilter),pcFilter)}</div><div class="small-note" style="margin-bottom:14px">※このデバイスに記録されているデータのみでの数字です。全アカウント共有の数字は「ランキング」タブでご確認ください。</div>`;
       html+=`<div class="card"><h3>${avatarHtml(m.id,26)} ${esc(m.name)} の通算成績</h3>
         ${ratingHtml}
         <div class="stat-grid">
