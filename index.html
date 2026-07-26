@@ -4322,6 +4322,16 @@ const Analysis = {
           <b style="color:#b91c1c">⚠️ 弱点による頭打ち：</b>「${esc(weakItem.label)}」が基準の「普通」にも届いていません（現在値: ${weakItem.value.toFixed(2)}）。総合力が伴っていないと判断され、他の項目がどれだけ良くても上級（プロ級・SS）には到達できません。まずここを底上げすることが最優先です。
         </div>`;
       }
+      let capBlock = '';
+      if(grade.capped){
+        const nextCapThreshold = GAME_COUNT_CAP_THRESHOLDS[grade.capLevel];
+        const gamesNeeded = Math.max(0, nextCapThreshold - grade.totalGames);
+        const unlockLevel = Math.min(grade.capLevel+1, grade.rawLevel);
+        const unlockLabel = GRADE_LEVELS[unlockLevel]+'（'+GRADE_LETTERS[unlockLevel]+'ランク）';
+        capBlock = `<div style="background:rgba(37,99,235,.1);padding:10px 12px;border-radius:8px;margin-bottom:12px;font-size:12.5px">
+          <b style="color:#1d4ed8">🔢 対局数キャップ中：</b>実力自体は「${grade.rawLabel}（${grade.rawLetter}ランク）」相当ですが、対局数（現在${grade.totalGames}戦）がまだ足りていません。あと${gamesNeeded}局打てば、対局数の条件では「${unlockLabel}」まで表示上のランクが上がります。
+        </div>`;
+      }
       const rows = grade.breakdown.map(b=>{
         let target, gapText, statusIcon;
         if(b.level>=4){
@@ -4348,6 +4358,7 @@ const Analysis = {
       }).join('');
       body = `
         <div class="small-note" style="margin-bottom:10px">総合平均は${grade.continuousAvg.toFixed(2)}。次の「${nextLabel}」には平均${avgTarget.toFixed(1)}以上が必要です（あと${avgGap.toFixed(2)}）。</div>
+        ${capBlock}
         ${weakBlock}
         <div>${rows}</div>
       `;
