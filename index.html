@@ -2826,7 +2826,7 @@ const METRIC_LABELS = {
    人数別の上書き（3人打ちはラス率、4人打ちは放銃率をそれぞれ重み2に）はMETRIC_WEIGHT_OVERRIDESで指定する。
    レーティング・トップ率は「規定対局数を大きく超えた場合」にさらに重みを増す（ratingTopBoost参照）。 */
 const METRIC_WEIGHTS = {
-  rating:2, score:1, topRate:2, lastRate:1, rentaiRate:1, chip:1, agariRate:1, houjuuRate:1, wazyuusa:3
+  rating:4, score:1, topRate:2, lastRate:1, rentaiRate:1, chip:1, agariRate:1, houjuuRate:1, wazyuusa:3
 };
 const METRIC_WEIGHT_OVERRIDES = {
   3:   { lastRate:2 },
@@ -3868,7 +3868,7 @@ function renderAnalysis(){
       if(n.type==='bad') return `<div style="padding:8px 10px;margin:6px 0;border-radius:8px;background:rgba(220,38,38,.12);font-size:13.5px;line-height:1.6"><span style="color:#b91c1c;font-weight:700">🔴 ${esc(n.text)}</span></div>`;
       return `<div style="padding:6px 0;border-bottom:1px dashed var(--border);font-size:13.5px">・${esc(n.text)}</div>`;
     }).join('')}
-    <button class="btn block" style="margin-top:14px" onclick="Analysis.showActionPlan(${JSON.stringify(targetId)}, ${JSON.stringify(pcFilter)})">🎯 まず何をするべき？</button>
+    <button class="btn block" style="margin-top:14px" onclick='Analysis.showActionPlan(${JSON.stringify(targetId)}, ${JSON.stringify(pcFilter)})'>🎯 今より上手くなるためにまず何をするべき？</button>
     ${UI.actionPlanFor===targetId+'_'+pcFilter ? renderActionPlanHtml(targetId, pcFilter) : ''}
     </div>`;
   }
