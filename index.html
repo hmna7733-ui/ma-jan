@@ -708,6 +708,9 @@ function ensureMemberDefaults(m){
   if(m.isSelf===undefined) m.isSelf=false;
   if(!m.excludedRuleIds) m.excludedRuleIds=[];
   if(!m.aliases) m.aliases=[];
+  if(!m.externalGames) m.externalGames={3:[],4:[]};
+  if(!m.externalGames[3]) m.externalGames[3]=[];
+  if(!m.externalGames[4]) m.externalGames[4]=[];
   return m;
 }
 
@@ -2605,6 +2608,45 @@ function computeRuleBreakdown(memberId, pcFilter){
 }
 
 /* 円グラフ（着順分布）をCSSのconic-gradientで描画 */
+/* ============ 他のゲームのデータ（AI分析の参考値。アプリ本体の集計には反映しない） ============ */
+const EXTERNAL_MATCH_TYPES = { dani:'段位戦', taikai:'大会戦', yuujin:'友人戦', other:'その他' };
+const EXTERNAL_STAT_FIELDS = [
+  ['totalGames','総対局数',''],
+  ['rank1','1位回数',''],
+  ['rank2','2位回数',''],
+  ['rank3','3位回数',''],
+  ['rank4','4位回数',''],
+  ['riichiRate','立直率','%'],
+  ['agariRate','和了率','%'],
+  ['houjuuRate','放銃率','%'],
+  ['fuuroRate','副露率','%'],
+  ['avgAgariPoint','平均和了','点'],
+  ['avgHoujuuPoint','平均放銃','点'],
+  ['tobiRate','飛び率','%'],
+  ['agariTurns','和了巡数',''],
+  ['menzenAgariRate','門前和了率','%'],
+  ['ronRate','ロン率','%'],
+  ['menzenRonRate','門前ロン率','%'],
+  ['tsumoRate','ツモ率','%'],
+  ['menzenTsumoRate','門前ツモ率','%'],
+  ['riichiSuccessRate','立直成功率','%'],
+  ['ryuukyokuRate','流局率','%'],
+  ['maxHoujuuPoint','最大放銃点','点']
+];
+/* 入力された1位〜4位回数から平均順位・トップ率などを算出 */
+function computeExternalDerived(entry){
+  const pc = entry.pc;
+  const st = entry.stats||{};
+  const n = st.totalGames||0;
+  const ranks = [st.rank1||0, st.rank2||0, st.rank3||0, st.rank4||0].slice(0,pc);
+  if(!n) return null;
+  const avgRank = ranks.reduce((a,c,i)=>a+(i+1)*c,0)/n;
+  const topRate = (ranks[0]||0)/n*100;
+  const rentaiRate = ((ranks[0]||0)+(ranks[1]||0))/n*100;
+  const lastRate = (ranks[pc-1]||0)/n*100;
+  return { n, ranks, avgRank, topRate, rentaiRate, lastRate };
+}
+
 function pieChartHtml(rankCount, n, maxRank, size){
   size = size || 110;
   const colors = maxRank>=4 ? ['#8ab6e8','#8fcf9f','#c3a6e0','#f1a29c'] : ['#8ab6e8','#8fcf9f','#f1a29c'];
@@ -2648,6 +2690,61 @@ function gradeColor(grade){
   };
   return map[grade] || map.C;
 }
+/* ============ 麻雀プロ理論 知識ベース（今後も追記していく前提の拡張可能な定数） ============
+   4人打ちをベースにした現代麻雀理論。3人打ちの場合はこれに3人打ち特有の考慮点を掛け合わせて使う。
+   version を上げながら、new_borders などに随時ボーダーラインを追記していく想定。 */
+const PRO_THEORY = {
+  version: 1,
+  /* 基礎力の5レイヤー */
+  foundationSkills: [
+    { key:'efficiency', label:'牌理・牌効率', desc:'受入枚数の把握、複合形の分解、5ブロック理論、テンパイ確率の最大化' },
+    { key:'judgement', label:'状況判断・押し引き', desc:'着順期待値の計算、手牌価値のリアルタイム査定、相手の速度と打点の推定、押し引きボーダーの保有' },
+    { key:'cognition', label:'情報処理・認知力', desc:'手出し/ツモ切りの記憶、壁の把握、河のノイズ（違和感）の察知' },
+    { key:'system', label:'点数計算・ルール適応', desc:'符計算の自動化、ルールごとの戦術切り替え' },
+    { key:'mental', label:'メンタル・自己管理', desc:'結果論バイアスの排除、感情の遮断、打牌の等速性' }
+  ],
+  /* 段階別の視座（4段階）。lastAvoidRate=ラス回避率、houjuuRate=放銃率（他ゲームデータがある場合のみ判定に使用） */
+  stages: [
+    { key:'beginner', label:'初級者', view:'自分の手牌のみ（役を作る、アガる）',
+      trait:'現物・スジ・ベタオリの概念がまだ定着しておらず、放銃率が高止まりしやすい段階' },
+    { key:'intermediate', label:'中級者', view:'自分の手牌＋他家1人（リーチ者）への対応',
+      trait:'現物・スジ・ノーチャンスを使ったベタオリはできるが、鳴きやダマテンへの警戒がまだ手薄な段階' },
+    { key:'advanced', label:'上級者', view:'4人全員の速度比較、ベタオリ、点数状況判断',
+      trait:'鳴き・ダマテンの速度もケアし、オーラスの点数状況から逆算した手作りができる段階' },
+    { key:'pro', label:'トッププロ', view:'卓全体の未来、確率の歪み、心理誘導',
+      trait:'絞り・アシスト・ブラフなど相手の思考をコントロールする引き出しを状況に応じて使い分けられる段階' }
+  ],
+  /* 押し引きボーダー（子の先制リーチ・平均打点5000〜6000点を基準とした4人打ちの目安） */
+  pushFoldBorder: {
+    goodShapeTenpai: '良形テンパイなら1〜2ハンでも追っかけリーチが基本（勝率45〜50%あるため）。3ハン以上は鉄押し。',
+    badShapeTenpai: '愚形テンパイは1〜2ハンなら鉄オリ。3ハンは危険度次第、4ハン（満貫）以上は押し切ってよい。',
+    ichishanten: 'イーシャンテンからは満貫未満なら無スジを1枚でも引いたら即オリが現代麻雀の格言。満貫の好形イーシャンテンでも無スジは1枚まで。',
+    vsParent: '親リーチは子リーチよりボーダーが1ハン厳しくなる（平均打点が1.5倍のため）。',
+    dangerTiles: '現物0%、ノーチャンス1〜3%、スジの1・9は2〜3%、スジの2・8は4〜5%、無スジの3・7・4・5・6は14〜18%が危険度の目安。'
+  },
+  /* 3人打ち特有の補足（4人打ち理論との差分） */
+  threePlayerNotes: {
+    general: '3人打ちはハネマン以上が飛び交う高打点環境のため、満貫未満の手は基本的にオリるのが基準。無筋は満貫以上が最低条件。',
+    nihanShibari: '完全2飜縛りでは1飜の手を無理に2飜へ寄せると手作りが大きく遅れる。役を足すより最速のテンパイを優先すべき局面が多い。',
+    lowScoreCause: '3人打ちでスコアが極端に低い要因は、守備力不足よりも「打点を狙いすぎた遠回り」「相手の打点読みの不正確さによる無駄オリ」であることが多い。'
+  }
+};
+
+/* 利用可能なデータから、現在の打ち手が主にどの段階（初級者〜トッププロ）に近いかを推定する。
+   放銃率など詳細スタッツが無い場合は、ラス回避率・平均順位グレードのみから緩やかに推定する。 */
+function diagnoseStage(lastAvoidRate, avoidBase, tierGrade, houjuuRate){
+  let score = 0; // 0=初級者寄り 〜 3=トッププロ寄り
+  if(lastAvoidRate>=avoidBase) score += 1;
+  if(lastAvoidRate>=avoidBase+8) score += 1;
+  if(['SSS','SS','S'].includes(tierGrade)) score += 1;
+  if(houjuuRate!==undefined && houjuuRate!==null){
+    if(houjuuRate<=13) score += 1;
+    if(houjuuRate<=10) score += 1;
+  }
+  const idx = Math.max(0, Math.min(3, Math.round(score * 3 / (houjuuRate!==undefined?5:3))));
+  return PRO_THEORY.stages[idx];
+}
+
 function rankTierGrade(avgRank, playerCount){
   const table3 = [
     [1.80,'SSS','異常な数値です。歴史的な超上振れか、飛び抜けた実力を持っています。'],
@@ -2678,51 +2775,136 @@ function rankTierGrade(avgRank, playerCount){
 
 function generateInsights(memberId, pcFilter){
   const s = computeStats(memberId, pcFilter);
-  if(!s || s.n<2) return { grade:null, notes:['対局数がもう少し増えると、傾向が見えてきます（目安は10半荘以上）。'] };
+  if(!s || s.n<2) return { grade:null, notes:[{type:'neutral', text:'対局数がもう少し増えると、傾向が見えてきます（目安は10半荘以上）。'}] };
   const notes=[];
+  const push = (type, text)=>notes.push({type, text});
   const maxRank = s.maxRank;
   const baseline = (maxRank+1)/2; // 4人打ちなら2.5、3人打ちなら2.0が基準値
   const t = computeTobashiStats(memberId, pcFilter);
   const c = computeSettlementStats(memberId, pcFilter);
-  let tier = null;
+  let tier = null, realTier = null, gameTier = null;
+  let mergedAvgRank = s.avgRank, mergedN = s.n;
+  let extAvgRank = null, extTotalGames = 0;
+
+  const member = getMember(memberId);
+  const extEntries = (pcFilter!=='all' && member && member.externalGames && member.externalGames[pcFilter]) || [];
 
   if(pcFilter!=='all'){
+    // 0. 他のゲームのデータがあれば合算してグレード判定に反映
+    let extRankSum = 0;
+    extEntries.forEach(entry=>{
+      const derived = computeExternalDerived(entry);
+      if(derived){ extRankSum += derived.avgRank*derived.n; extTotalGames += derived.n; }
+    });
+    realTier = rankTierGrade(s.avgRank, pcFilter);
+    if(extTotalGames>0){
+      extAvgRank = extRankSum/extTotalGames;
+      gameTier = rankTierGrade(extAvgRank, pcFilter);
+      mergedAvgRank = (s.avgRank*s.n + extRankSum) / (s.n + extTotalGames);
+      mergedN = s.n + extTotalGames;
+      push('neutral', `このアプリの${s.n}戦に、他のゲームのデータ${extTotalGames}戦を合算し、通算${mergedN}戦・平均順位${mergedAvgRank.toFixed(2)}としてグレードを判定しています。`);
+    }
+
     // 1. 平均順位のグレード判定（3人打ち基準2.00／4人打ち基準2.50の実データベース）
-    tier = rankTierGrade(s.avgRank, pcFilter);
+    tier = rankTierGrade(mergedAvgRank, pcFilter);
 
     // 2. データの信頼度（対局数が少ないと数値がブレやすいため）
-    if(s.n<15) notes.push(`※現在${s.n}戦のデータです。麻雀は運の要素が大きいため、対局数が少ないうちは数値が大きくブレます。まだ参考値程度に見てください。`);
-    else if(s.n<50) notes.push(`※現在${s.n}戦のデータです。傾向は見え始めていますが、実力を正確に測るにはもう少し対局数があるとより信頼できます。`);
+    if(mergedN<15) push('neutral', `※現在${mergedN}戦のデータです。麻雀は運の要素が大きいため、対局数が少ないうちは数値が大きくブレます。まだ参考値程度に見てください。`);
+    else if(mergedN<50) push('neutral', `※現在${mergedN}戦のデータです。傾向は見え始めていますが、実力を正確に測るにはもう少し対局数があるとより信頼できます。`);
 
     // 3. ラス回避率の評価（4人打ち基準75%／3人打ち基準66.6%の実データベース）
     const lastAvoidRate = 100 - s.lastRate;
     const avoidBase = pcFilter===3 ? 66.6 : 75.0;
     const avoidGreat = pcFilter===3 ? 73 : 80;
     const avoidGood = pcFilter===3 ? 70 : 78;
-    if(lastAvoidRate>=avoidGreat) notes.push(`ラス回避率${lastAvoidRate.toFixed(0)}%は基準（${avoidBase}%）を大きく上回る、鉄壁クラスの守備力です。`);
-    else if(lastAvoidRate>=avoidGood) notes.push(`ラス回避率${lastAvoidRate.toFixed(0)}%は基準（${avoidBase}%）を上回っており、優秀な守備力です。`);
-    else if(lastAvoidRate<avoidBase-5) notes.push(`ラス回避率${lastAvoidRate.toFixed(0)}%は基準（${avoidBase}%）をやや下回っています。持ち点が厳しい局での撤退（ベタオリ）判断を早めると改善しそうです。`);
+    if(lastAvoidRate>=avoidGreat) push('good', `ラス回避率${lastAvoidRate.toFixed(0)}%は基準（${avoidBase}%）を大きく上回る、鉄壁クラスの守備力です。`);
+    else if(lastAvoidRate>=avoidGood) push('good', `ラス回避率${lastAvoidRate.toFixed(0)}%は基準（${avoidBase}%）を上回っており、優秀な守備力です。`);
+    else if(lastAvoidRate<avoidBase-5) push('bad', `ラス回避率${lastAvoidRate.toFixed(0)}%は基準（${avoidBase}%）をやや下回っています。持ち点が厳しい局での撤退（ベタオリ）判断を早めると改善しそうです。`);
+
+    // 3.5 段階診断（麻雀の基礎理論：初級者〜トッププロの4段階に今のデータを照らし合わせる）
+    const latestForStage = extEntries.length ? [...extEntries].sort((a,b)=>(b.enteredAt||0)-(a.enteredAt||0))[0] : null;
+    const houjuuForStage = latestForStage && latestForStage.stats ? latestForStage.stats.houjuuRate : undefined;
+    const stage = diagnoseStage(lastAvoidRate, avoidBase, tier.grade, houjuuForStage);
+    push('neutral', `【段階診断：${stage.label}】現在のデータからは「${stage.view}」という視座に近いと推定されます。${stage.trait}`);
 
     // 4. スタイル診断：平均順位・ラス回避率・収支を組み合わせたタイプ判定
     const scoreGood = s.totalPoint>0;
     const moneyGood = c.moneyTotal>0;
     if(['SSS','SS','S','A'].includes(tier.grade)){
       if(lastAvoidRate<avoidBase && scoreGood){
-        notes.push(`【スタイル診断：超攻撃型】着順は良いもののラス回避率は基準よりやや低め。多少のラスを恐れず高打点・トップを狙いにいく、攻撃的なタイプです。現在のルールと相性が良ければこのままでも強いですが、致命的な放銃だけは注意しておきたいところです。`);
+        push('neutral', `【スタイル診断：超攻撃型】着順は良いもののラス回避率は基準よりやや低め。多少のラスを恐れず高打点・トップを狙いにいく、攻撃的なタイプです。現在のルールと相性が良ければこのままでも強いですが、致命的な放銃だけは注意しておきたいところです。`);
       } else if(lastAvoidRate>=avoidGood && !scoreGood){
-        notes.push(`【スタイル診断：堅実・守備型】ラス回避率は高い一方でスコアは伸び悩み気味。失点を防ぐ技術は高いので、勝負どころでもう一段攻める意識を持てると、着順以上に収支が伸びそうです。`);
+        push('neutral', `【スタイル診断：堅実・守備型】ラス回避率は高い一方でスコアは伸び悩み気味。失点を防ぐ技術は高いので、勝負どころでもう一段攻める意識を持てると、着順以上に収支が伸びそうです。`);
       } else if(tier.grade!=='E' && !moneyGood && c.moneyTotal<0){
-        notes.push(`【スタイル診断：着順は良いが収支が伸びない型】着順自体は悪くないのに、精算ベースの収支はマイナスです。チップの被弾や放銃による失点が響いている可能性があるので、勝負手での押し引きラインを見直すと収支が改善するかもしれません。`);
+        push('bad', `【スタイル診断：着順は良いが収支が伸びない型】着順自体は悪くないのに、精算ベースの収支はマイナスです。チップの被弾や放銃による失点が響いている可能性があるので、勝負手での押し引きラインを見直すと収支が改善するかもしれません。`);
       }
     }
 
     // 5. 長期データでの「言い訳排除」診断：サンプルが十分なのに成績が悪い場合、運のせいにできないことを直言する
-    if(s.n>=50 && ['D','E'].includes(tier.grade)){
-      notes.push(`【${s.n}戦という長期データからの直言】配牌やツモの偏りは、これだけの試行回数があればほぼ平等に収束しています。それでも平均順位${s.avgRank.toFixed(2)}（グレード${tier.grade}）に留まっているのは、運ではなく「勝負すべき局面での押し引きの基準」か「手作りの速度」のどちらかに、繰り返し起きている根本的な課題がある可能性が高いです。`);
+    if(mergedN>=50 && ['D','E'].includes(tier.grade)){
+      push('bad', `【${mergedN}戦という長期データからの直言】配牌やツモの偏りは、これだけの試行回数があればほぼ平等に収束しています。それでも平均順位${mergedAvgRank.toFixed(2)}（グレード${tier.grade}）に留まっているのは、運ではなく「勝負すべき局面での押し引きの基準」か「手作りの速度」のどちらかに、繰り返し起きている根本的な課題がある可能性が高いです。`);
+    }
+
+    // 5.2 3人打ち特有の理論補足（成績が伸び悩んでいる場合のみ）
+    if(pcFilter===3 && ['C','D','E'].includes(tier.grade)){
+      push('neutral', `【3人打ち理論の補足】${PRO_THEORY.threePlayerNotes.lowScoreCause}`);
     }
   }
 
-  // 6. 対戦相手：レーティング差を考慮した相性分析（4戦以上のデータがある相手のみ）
+  // 5.3 根本課題の統合診断（複数の悪いシグナルが重なった時にだけ表示する、最重要の「根っこ」診断）
+  if(pcFilter!=='all' && tier){
+    const latestForRoot = extEntries.length ? [...extEntries].sort((a,b)=>(b.enteredAt||0)-(a.enteredAt||0))[0] : null;
+    const houjuuForRoot = latestForRoot && latestForRoot.stats ? latestForRoot.stats.houjuuRate : undefined;
+    const avoidBaseForRoot = pcFilter===3 ? 66.6 : 75.0;
+    const lastAvoidForRoot = 100 - s.lastRate;
+    const badGrade = ['D','E'].includes(tier.grade);
+    const badDefense = lastAvoidForRoot < avoidBaseForRoot - 5;
+    const badHoujuu = houjuuForRoot!==undefined && houjuuForRoot>16;
+    const signals = [badGrade, badDefense, badHoujuu].filter(Boolean).length;
+    if(signals>=2){
+      const border = pcFilter===3 ? PRO_THEORY.threePlayerNotes.general : PRO_THEORY.pushFoldBorder.ichishanten;
+      push('bad', `【根本課題】平均順位・ラス回避率${houjuuForRoot!==undefined?'・放銃率':''}が同時に基準を下回っています。現代麻雀の押し引き理論では「${border}」が基準です。この基準に照らして、勝負すべきでない局面（打点が足りないイーシャンテン・愚形テンパイ）で押してしまっていないかを、次に打つ半荘で意識的にチェックしてみてください。`);
+    }
+  }
+
+  // 5.5 他のゲームのデータから見える、押し引き・速度の基礎力分析（最新のエントリを使用）
+  if(extEntries.length){
+    const latest = [...extEntries].sort((a,b)=>(b.enteredAt||0)-(a.enteredAt||0))[0];
+    const st = latest.stats||{};
+    if(st.houjuuRate!==undefined){
+      if(st.houjuuRate<12) push('good', `「${esc(latest.gameName)}」の放銃率${st.houjuuRate}%は基準（12〜13%前後）より低く、守備・危険牌の見極めが優秀です。危険牌の判断（現物0%・スジ2〜5%・無スジ14〜18%という危険度の階段）が身についている証拠です。`);
+      else if(st.houjuuRate>16) push('bad', `「${esc(latest.gameName)}」の放銃率${st.houjuuRate}%は一般的な目安（13〜14%前後）より高めです。現代麻雀のボーダーライン理論では「${PRO_THEORY.pushFoldBorder.ichishanten}」が基準です。打点が足りない手で無筋を押していないか、見直す価値がありそうです。`);
+    }
+    if(st.fuuroRate!==undefined && st.agariRate!==undefined){
+      if(st.fuuroRate>=35 && st.agariRate<25) push('bad', `「${esc(latest.gameName)}」の副露率${st.fuuroRate}%に対して和了率${st.agariRate}%はやや低めです。鳴いてスピードを出す方向性は良いものの、鳴いた後の手が最後までまとまりきっていない可能性があります。`);
+    }
+    if(st.riichiSuccessRate!==undefined && st.riichiSuccessRate<45){
+      push('bad', `「${esc(latest.gameName)}」の立直成功率${st.riichiSuccessRate}%はやや低めです。愚形・遠い形からのリーチが多いと、成功率も打点も伸びにくくなります。`);
+    }
+    // 6. 編集による向上・悪化の診断（前回データとの比較）
+    if(latest.prevStats){
+      const diffs = [];
+      EXTERNAL_STAT_FIELDS.forEach(([k,label,unit])=>{
+        const oldV = latest.prevStats[k], newV = (latest.stats||{})[k];
+        if(oldV===undefined || newV===undefined || k==='totalGames' || k.startsWith('rank')) return;
+        const diff = newV-oldV;
+        if(Math.abs(diff)>=1){
+          const better = (k==='houjuuRate'||k==='tobiRate'||k==='ryuukyokuRate'||k==='avgHoujuuPoint'||k==='maxHoujuuPoint') ? diff<0 : diff>0;
+          diffs.push({label, oldV, newV, diff, unit, better});
+        }
+      });
+      const gamesDiff = (latest.stats.totalGames||0) - (latest.prevStats.totalGames||0);
+      if(diffs.length){
+        const improved = diffs.filter(x=>x.better).sort((a,b)=>Math.abs(b.diff)-Math.abs(a.diff)).slice(0,2);
+        const worsened = diffs.filter(x=>!x.better).sort((a,b)=>Math.abs(b.diff)-Math.abs(a.diff)).slice(0,2);
+        const periodText = `（この${gamesDiff>0?gamesDiff+'戦ほど':'期間'}）`;
+        if(improved.length) push('good', `【前回の入力からの向上】${periodText} ${improved.map(x=>`${x.label}が${x.oldV}${x.unit}→${x.newV}${x.unit}`).join('、')}。`);
+        if(worsened.length) push('bad', `【前回の入力からの悪化】${periodText} ${worsened.map(x=>`${x.label}が${x.oldV}${x.unit}→${x.newV}${x.unit}`).join('、')}。`);
+      }
+    }
+  }
+
+  // 7. 対戦相手：レーティング差を考慮した相性分析（4戦以上のデータがある相手のみ）
   const opp = computeHeadToHead(memberId, pcFilter);
   const oppEntries = Object.entries(opp).filter(([,o])=>o.games>=4);
   if(oppEntries.length && pcFilter!=='all'){
@@ -2730,14 +2912,13 @@ function generateInsights(memberId, pcFilter){
     const best = oppEntries[0];
     const worst = oppEntries[oppEntries.length-1];
     const myRating = getMemberRating(memberId, pcFilter);
-    const ratingOf = (name)=>{ const mm=DB.members.find(x=>x.name===name); return mm?getMemberRating(mm.id, pcFilter):null; };
     if(best[1].scoreDiff>0){
       const oppRating = getMemberRating(best[0], pcFilter);
       const gap = oppRating - myRating;
       let extra = '';
       if(gap>=50) extra = `Rで${Math.round(gap)}ほど上の相手にこの差をつけているのは、実力が数字以上に高いことの裏付けです。`;
       else if(gap<=-50) extra = `ただしRでは自分の方が${Math.round(-gap)}ほど高いため、この差は「格下相手に順当に勝てている」という結果であり、過大評価はしすぎないほうが良さそうです。`;
-      notes.push(`${memberName(best[0])}さんとは${best[1].games}戦で差分${sign(Math.round(best[1].scoreDiff*10)/10)}と相性が良好です。${extra}`);
+      push('good', `${memberName(best[0])}さんとは${best[1].games}戦で差分${sign(Math.round(best[1].scoreDiff*10)/10)}と相性が良好です。${extra}`);
     }
     if(worst[1].scoreDiff<0 && worst[0]!==best[0]){
       const oppRating = getMemberRating(worst[0], pcFilter);
@@ -2745,39 +2926,43 @@ function generateInsights(memberId, pcFilter){
       let extra = '';
       if(gap<=-50) extra = `Rでは自分の方が${Math.round(-gap)}ほど高いにもかかわらずこの結果なので、「相手が強い」で片付けるのは早計です。この相手との対局を見直し、何を通してしまっているのか（放銃か、無駄なオリか）を振り返る価値があります。`;
       else if(gap>=50) extra = `相手はRで${Math.round(gap)}ほど上なので、ある程度の差は実力差として自然な範囲です。`;
-      notes.push(`${memberName(worst[0])}さんとは${worst[1].games}戦で差分${sign(Math.round(worst[1].scoreDiff*10)/10)}とやや分が悪いです。${extra}`);
+      push('bad', `${memberName(worst[0])}さんとは${worst[1].games}戦で差分${sign(Math.round(worst[1].scoreDiff*10)/10)}とやや分が悪いです。${extra}`);
     }
   }
 
-  // 7. ルール別の得意・不得意（2ルール以上のデータがある場合）
+  // 7.5 ルール別の得意・不得意（2ルール以上のデータがある場合）
   const rules = computeRuleBreakdown(memberId, pcFilter);
   const rulesWithEnough = rules.filter(r=>r.n>=3);
   if(rulesWithEnough.length>=2){
     const bestRule = rulesWithEnough[0];
     const worstRule = rulesWithEnough[rulesWithEnough.length-1];
-    if(bestRule.rule) notes.push(`「${esc(bestRule.rule.name)}」（${bestRule.n}戦・平均${bestRule.avgRank.toFixed(2)}位）が最も好成績です。`);
-    if(worstRule.rule && worstRule.ruleId!==bestRule.ruleId) notes.push(`一方「${esc(worstRule.rule.name)}」（${worstRule.n}戦・平均${worstRule.avgRank.toFixed(2)}位）は苦戦気味で、ルールごとの点差・オカの違いが影響している可能性があります。`);
+    if(bestRule.rule) push('good', `「${esc(bestRule.rule.name)}」（${bestRule.n}戦・平均${bestRule.avgRank.toFixed(2)}位）が最も好成績です。`);
+    if(worstRule.rule && worstRule.ruleId!==bestRule.ruleId) push('bad', `一方「${esc(worstRule.rule.name)}」（${worstRule.n}戦・平均${worstRule.avgRank.toFixed(2)}位）は苦戦気味で、ルールごとの点差・オカの違いが影響している可能性があります。`);
   }
-  // ルール特性（トビ・2飜縛り）による着眼点の補足
+  // ルール特性（トビ・2飜縛り）による着眼点の補足：「主に打っている」は対局数が最も多いルールを参照する
   if(rulesWithEnough.length){
-    const mainRule = rulesWithEnough[0].rule;
+    const mainRule = [...rulesWithEnough].sort((a,b)=>b.n-a.n)[0].rule;
     if(mainRule && mainRule.tobiAri && pcFilter!=='all' && t.bustedCount>0){
       const bustRate = t.bustedCount/s.n*100;
-      notes.push(`主に打っている「${esc(mainRule.name)}」はトビありルールです。トビは1回の失点が大きいルールなので、箱下率${bustRate.toFixed(0)}%（${s.n}戦中${t.bustedCount}回）は収支への影響が大きめです。${bustRate>=15?'撤退（ベタオリ）の判断を早める価値がありそうです。':'この水準を保てていれば大崩れのリスクは低めです。'}`);
+      push(bustRate>=15?'bad':'good', `主に打っている「${esc(mainRule.name)}」はトビありルールです。トビは1回の失点が大きいルールなので、箱下率${bustRate.toFixed(0)}%（${s.n}戦中${t.bustedCount}回）は収支への影響が大きめです。${bustRate>=15?'撤退（ベタオリ）の判断を早める価値がありそうです。':'この水準を保てていれば大崩れのリスクは低めです。'}`);
     }
     if(mainRule && pcFilter===3 && mainRule.shibariType==='kanzen'){
-      notes.push(`主に打っている「${esc(mainRule.name)}」は完全2飜縛りです。1飜しかない手を無理に2飜へ寄せようとすると手作りが大きく遅れるルールなので、成績が伸び悩んでいる場合は「役を足すこと」より「最速でテンパイを取ること」を優先できているか、振り返ってみる価値があります。`);
+      push('neutral', `主に打っている「${esc(mainRule.name)}」は完全2飜縛りです。1飜しかない手を無理に2飜へ寄せようとすると手作りが大きく遅れるルールなので、成績が伸び悩んでいる場合は「役を足すこと」より「最速でテンパイを取ること」を優先できているか、振り返ってみる価値があります。`);
     }
   }
 
   // 8. 収支効率（1戦あたりの金額）
   if(c.moneyTotal!==0 && s.n>0){
     const perGame = c.moneyTotal/s.n;
-    notes.push(`精算ベースでの1戦あたり収支は${sign(Math.round(perGame))}Pです。`);
+    push(perGame>0?'good':'bad', `精算ベースでの1戦あたり収支は${sign(Math.round(perGame))}Pです。`);
   }
 
-  if(notes.length===0) notes.push('目立った偏りのない、安定した成績です。');
-  return { grade: tier?tier.grade:null, gradeDesc: tier?tier.desc:null, avgRank: s.avgRank, baseline, notes };
+  if(notes.length===0) push('neutral', '目立った偏りのない、安定した成績です。');
+  return {
+    grade: tier?tier.grade:null, gradeDesc: tier?tier.desc:null, avgRank: mergedAvgRank, baseline, mergedN, notes,
+    realGrade: realTier?realTier.grade:null, realDesc: realTier?realTier.desc:null, realAvgRank: s.avgRank, realN: s.n,
+    gameGrade: gameTier?gameTier.grade:null, gameDesc: gameTier?gameTier.desc:null, gameAvgRank: extAvgRank, gameN: extTotalGames
+  };
 }
 
 /* ============ 描画: ランキング ============ */
@@ -3170,6 +3355,11 @@ const Ranking = {
 
 function renderAnalysis(){
   UI.analysisPlayerCount = UI.analysisPlayerCount || 'all';
+  if(!UI._analysisMemberDefaulted && DB.members.length){
+    const selfMember = DB.members.find(m=>m.isSelf);
+    if(selfMember) UI.analysisMemberId = selfMember.id;
+    UI._analysisMemberDefaulted = true;
+  }
   const playerCounts = Array.from(new Set(DB.rules.map(r=>r.playerCount))).sort();
   let html=`<div class="card">
     <div class="row" style="justify-content:space-between;align-items:center">
@@ -3203,15 +3393,34 @@ function renderAnalysis(){
       <h3>✨ AI分析（${targetId?esc(memberName(targetId)):''}）</h3>
       <div class="small-note" style="margin-bottom:10px">対局データから自動で作成した簡易サマリーです（このアプリ内で完結する統計に基づくもので、外部AIへは送信されません）。</div>`;
     if(result.grade){
+      const hasGame = !!result.gameGrade;
+      const smallBadge = (label, grade, avgRank, n)=>{
+        const gc = gradeColor(grade);
+        return `<div class="grow" style="background:${gc.grad};border-radius:14px;padding:12px;text-align:center;box-shadow:0 4px 14px -6px ${gc.glow}, inset 0 1px 0 rgba(255,255,255,.25)">
+          <div style="font-size:10.5px;font-weight:700;color:${gc.text};opacity:.85">${label}（${n}戦）</div>
+          <div style="font-size:32px;font-weight:900;color:${gc.text};line-height:1.1;margin:2px 0">${grade}</div>
+          <div style="font-size:11px;font-weight:700;color:${gc.text}">平均${avgRank.toFixed(2)}位</div>
+        </div>`;
+      };
+      if(hasGame){
+        html+=`<div class="row" style="gap:10px;margin-bottom:10px">
+          ${smallBadge('リアル（このアプリ）', result.realGrade, result.realAvgRank, result.realN)}
+          ${smallBadge('ゲーム（他アプリ入力）', result.gameGrade, result.gameAvgRank, result.gameN)}
+        </div>`;
+      }
       const gc = gradeColor(result.grade);
       html+=`<div style="background:${gc.grad};border-radius:16px;padding:18px;text-align:center;margin-bottom:14px;box-shadow:0 6px 20px -6px ${gc.glow}, inset 0 1px 0 rgba(255,255,255,.25)">
-        <div style="font-size:11.5px;font-weight:700;color:${gc.text};opacity:.85;letter-spacing:1px">${pcFilter}人打ち 平均順位グレード</div>
+        <div style="font-size:11.5px;font-weight:700;color:${gc.text};opacity:.85;letter-spacing:1px">${pcFilter}人打ち ${hasGame?'通算':'平均順位'}グレード</div>
         <div style="font-size:56px;font-weight:900;color:${gc.text};line-height:1.1;text-shadow:0 2px 6px rgba(0,0,0,.2);margin:4px 0">${result.grade}</div>
-        <div style="font-size:13px;font-weight:700;color:${gc.text}">平均順位 ${result.avgRank.toFixed(2)}（基準値 ${result.baseline.toFixed(2)}）</div>
+        <div style="font-size:13px;font-weight:700;color:${gc.text}">平均順位 ${result.avgRank.toFixed(2)}（基準値 ${result.baseline.toFixed(2)}）${hasGame?'　全'+result.mergedN+'戦':''}</div>
         <div style="font-size:12px;color:${gc.text};opacity:.9;margin-top:6px;line-height:1.5">${esc(result.gradeDesc||'')}</div>
       </div>`;
     }
-    html+=`${notes.map(n=>`<div style="padding:6px 0;border-bottom:1px dashed var(--border);font-size:13.5px">・${esc(n)}</div>`).join('')}
+    html+=`${notes.map(n=>{
+      if(n.type==='good') return `<div style="padding:8px 10px;margin:6px 0;border-radius:8px;background:rgba(37,99,235,.12);font-size:13.5px;line-height:1.6"><span style="color:#1d4ed8;font-weight:700">🔵 ${esc(n.text)}</span></div>`;
+      if(n.type==='bad') return `<div style="padding:8px 10px;margin:6px 0;border-radius:8px;background:rgba(220,38,38,.12);font-size:13.5px;line-height:1.6"><span style="color:#b91c1c;font-weight:700">🔴 ${esc(n.text)}</span></div>`;
+      return `<div style="padding:6px 0;border-bottom:1px dashed var(--border);font-size:13.5px">・${esc(n.text)}</div>`;
+    }).join('')}
     </div>`;
   }
 
@@ -3318,6 +3527,52 @@ function renderAnalysis(){
           <div class="stat-box"><div class="v ${computeTotalUmaMi(UI.analysisMemberId,s.games)>0?'pos':computeTotalUmaMi(UI.analysisMemberId,s.games)<0?'neg':''}">${sign(computeTotalUmaMi(UI.analysisMemberId,s.games))}</div><div class="l">通算馬身数</div></div>
         </div>
       </div>`;
+
+      if(pcFilter===3 || pcFilter===4){
+        ensureMemberDefaults(m);
+        const extEntries = (m.externalGames && m.externalGames[pcFilter]) || [];
+        html+=`<div class="card">
+          <div class="row" style="justify-content:space-between;align-items:center">
+            <h3 style="margin-bottom:0">🎮 他のゲームのデータ（${pcFilter}人打ち）</h3>
+          </div>
+          <div class="small-note" style="margin:8px 0">雀魂などこのアプリ以外で打った成績を入力しておくと、AI分析の参考データとして使われます（このアプリ本体の対局履歴・ランキングには反映されません）。</div>`;
+        if(extEntries.length===0){
+          html+=`<div class="small-note">まだ入力されていません。</div>`;
+        } else {
+          [...extEntries].sort((a,b)=>(b.enteredAt||0)-(a.enteredAt||0)).forEach(entry=>{
+            const derived = computeExternalDerived(entry);
+            const expanded = UI.expandedExternalGameId===entry.id;
+            html+=`<div class="rating-card" style="background:linear-gradient(160deg,#0d1a24,#16303f 55%,#0a141c);border:1.5px solid rgba(79,195,221,.45);padding:14px;margin-bottom:10px;cursor:pointer" onclick="Analysis.toggleExternalGameExpand('${entry.id}')">
+              <div class="rating-card-icon" style="font-size:60px">🎮</div>
+              <div class="rating-card-shine"></div>
+              <div style="position:relative;z-index:1">
+                <div class="row" style="justify-content:space-between;align-items:center">
+                  <div style="color:#fff;font-weight:700">${esc(entry.gameName||'(名称未設定)')} ・ ${EXTERNAL_MATCH_TYPES[entry.matchType]||''}</div>
+                  <span style="font-size:16px;color:rgba(255,255,255,.7)">${expanded?'▾':'▸'}</span>
+                </div>
+                <div style="font-size:11px;color:rgba(255,255,255,.65);margin-top:3px">記録日: ${new Date(entry.enteredAt||Date.now()).toLocaleDateString('ja-JP')}${entry.ruleId&&getRule(entry.ruleId)?' ・ 参照ルール: '+esc(getRule(entry.ruleId).name):''}</div>
+                ${derived?`<div class="row wrap" style="gap:8px;margin-top:8px">
+                  <span class="chip" style="padding:5px 10px;font-size:11.5px;font-weight:600;background:rgba(255,255,255,.16);color:#fff;cursor:default">総対局数 ${derived.n}</span>
+                  <span class="chip" style="padding:5px 10px;font-size:11.5px;font-weight:600;background:rgba(255,255,255,.16);color:#fff;cursor:default">平均${derived.avgRank.toFixed(2)}位</span>
+                  <span class="chip" style="padding:5px 10px;font-size:11.5px;font-weight:600;background:rgba(255,255,255,.16);color:#fff;cursor:default">トップ率${derived.topRate.toFixed(0)}%</span>
+                </div>`:''}
+                ${expanded?`
+                  ${derived?`<div class="section-title" style="color:rgba(255,255,255,.85)">着順の割合</div><div style="color:#fff">${pieChartHtml(derived.ranks, derived.n, entry.pc, 90)}</div>`:''}
+                  <div class="row wrap" style="gap:10px;margin-top:10px;font-size:12px;color:rgba(255,255,255,.85)">
+                    ${EXTERNAL_STAT_FIELDS.filter(([k])=>entry.pc===4||k!=='rank4').map(([k,label,unit])=>`<span>${label}: ${(entry.stats&&entry.stats[k]!==undefined)?entry.stats[k]+unit:'-'}</span>`).join('')}
+                  </div>
+                  <div class="row" style="gap:10px;margin-top:12px" onclick="event.stopPropagation()">
+                    <button class="btn sm secondary" onclick="ExternalGame.editEntry('${m.id}',${pcFilter},'${entry.id}')">編集</button>
+                    <button class="btn sm danger" onclick="ExternalGame.remove('${m.id}',${pcFilter},'${entry.id}')">削除</button>
+                  </div>
+                `:''}
+              </div>
+            </div>`;
+          });
+        }
+        html+=`<button class="btn sm secondary block" onclick="ExternalGame.newEntry(${pcFilter})">＋ ゲームデータを追加</button>
+        </div>`;
+      }
 
       const ruleRows = computeRuleBreakdown(UI.analysisMemberId, pcFilter);
       if(ruleRows.length){
@@ -3426,9 +3681,128 @@ const Analysis = {
   setOpponent(id){ UI.analysisOpponentId=id; localStorage.setItem('mj_collapse_analysisGames','0'); render(); },
   clearOpponent(){ UI.analysisOpponentId=null; render(); },
   toggleOpponentExpand(oid){ UI.expandedOpponentId = (UI.expandedOpponentId===oid) ? null : oid; render(); },
+  toggleExternalGameExpand(id){ UI.expandedExternalGameId = (UI.expandedExternalGameId===id) ? null : id; render(); },
   setPlayerCount(pc){ UI.analysisPlayerCount=pc; render(); },
   toggleInsights(){ UI.showInsights=!UI.showInsights; render(); }
 };
+
+const ExternalGame = {
+  newEntry(pc){
+    UI.externalGameDraft = { id:uid(), gameName:'', matchType:'dani', ruleId:'', pc, stats:{} };
+    UI.externalGameEditingId = null;
+    UI.externalGameFormStep = 1;
+    renderExternalGameModal();
+  },
+  editEntry(memberId, pc, id){
+    const m = getMember(memberId);
+    ensureMemberDefaults(m);
+    const entry = (m.externalGames[pc]||[]).find(e=>e.id===id);
+    if(!entry) return;
+    UI.externalGameDraft = JSON.parse(JSON.stringify(entry));
+    UI.externalGameDraft.pc = pc;
+    UI.externalGameEditingId = id;
+    UI.externalGameFormStep = 1;
+    renderExternalGameModal();
+  },
+  updateDraft(key,val){ UI.externalGameDraft[key]=val; },
+  updateStat(key,val){ UI.externalGameDraft.stats = UI.externalGameDraft.stats||{}; UI.externalGameDraft.stats[key]=numOrZero(val); },
+  nextStep(){
+    if(!UI.externalGameDraft.gameName || !UI.externalGameDraft.gameName.trim()){
+      renderInfoModal('ゲーム名が未入力です','ゲーム名（雀魂など）を入力してください。');
+      return;
+    }
+    UI.externalGameFormStep = 2;
+    renderExternalGameModal();
+  },
+  prevStep(){ UI.externalGameFormStep = 1; renderExternalGameModal(); },
+  close(){
+    UI.externalGameDraft=null; UI.externalGameEditingId=null;
+    document.getElementById('modalRoot').innerHTML='';
+  },
+  save(){
+    const memberId = UI.analysisMemberId;
+    const m = getMember(memberId);
+    if(!m){ renderInfoModal('メンバーが見つかりません','対象メンバーを確認してください。'); return; }
+    ensureMemberDefaults(m);
+    const draft = UI.externalGameDraft;
+    const pc = draft.pc;
+    const list = m.externalGames[pc] = m.externalGames[pc] || [];
+    const existingIdx = list.findIndex(e=>e.id===draft.id);
+    if(existingIdx>=0){
+      draft.prevStats = list[existingIdx].stats;
+      draft.prevEnteredAt = list[existingIdx].enteredAt;
+      draft.enteredAt = Date.now();
+      list[existingIdx] = draft;
+    } else {
+      draft.enteredAt = Date.now();
+      list.push(draft);
+    }
+    persist('members');
+    UI.externalGameDraft=null; UI.externalGameEditingId=null;
+    document.getElementById('modalRoot').innerHTML='';
+    render();
+  },
+  remove(memberId, pc, id){
+    showConfirmModal('削除しますか？', 'このゲームデータを削除します。この操作は元に戻せません。', ()=>{
+      const m = getMember(memberId);
+      ensureMemberDefaults(m);
+      m.externalGames[pc] = (m.externalGames[pc]||[]).filter(e=>e.id!==id);
+      persist('members');
+      render();
+    }, '削除する');
+  }
+};
+
+function renderExternalGameModal(){
+  const d = UI.externalGameDraft;
+  const step = UI.externalGameFormStep || 1;
+  let inner;
+  if(step===1){
+    inner = `
+      <div class="field-wrap"><label class="field">ゲーム名</label>
+        <input type="text" value="${esc(d.gameName||'')}" placeholder="例：雀魂" oninput="ExternalGame.updateDraft('gameName', this.value)">
+      </div>
+      <div class="field-wrap"><label class="field">対局の種類</label>
+        <select onchange="ExternalGame.updateDraft('matchType', this.value)">
+          ${Object.entries(EXTERNAL_MATCH_TYPES).map(([k,label])=>`<option value="${k}" ${d.matchType===k?'selected':''}>${label}</option>`).join('')}
+        </select>
+      </div>
+      <div class="field-wrap"><label class="field">参照するルール（このアプリ内のルールから任意で選択）</label>
+        <select onchange="ExternalGame.updateDraft('ruleId', this.value)">
+          <option value="">選択しない</option>
+          ${DB.rules.filter(r=>r.playerCount===d.pc).map(r=>`<option value="${r.id}" ${d.ruleId===r.id?'selected':''}>${esc(r.name)}</option>`).join('')}
+        </select>
+      </div>
+      <button class="btn block" onclick="ExternalGame.nextStep()">次へ</button>
+      <button class="btn ghost block" style="margin-top:8px" onclick="ExternalGame.close()">キャンセル</button>
+    `;
+  } else {
+    const fields = EXTERNAL_STAT_FIELDS.filter(([k])=> d.pc===4 || k!=='rank4');
+    inner = `
+      <div class="small-note" style="margin-bottom:10px">${esc(d.gameName||'')}（${EXTERNAL_MATCH_TYPES[d.matchType]||''}）の成績データを入力してください。分かる範囲でOKです。</div>
+      <div class="row wrap" style="gap:10px">
+        ${fields.map(([k,label,unit])=>`
+          <div class="field-wrap" style="width:calc(50% - 5px)">
+            <label class="field">${label}${unit?'（'+unit+'）':''}</label>
+            <input type="number" step="any" value="${(d.stats&&d.stats[k]!==undefined)?d.stats[k]:''}" oninput="ExternalGame.updateStat('${k}', this.value)">
+          </div>
+        `).join('')}
+      </div>
+      <button class="btn block" style="margin-top:10px" onclick="ExternalGame.save()">保存する</button>
+      <button class="btn ghost block" style="margin-top:8px" onclick="ExternalGame.prevStep()">戻る</button>
+    `;
+  }
+  document.getElementById('modalRoot').innerHTML = `
+    <div class="modal-overlay" onclick="if(event.target===this) ExternalGame.close()">
+      <div class="modal">
+        <div class="row" style="justify-content:space-between;align-items:center;margin-bottom:10px">
+          <h3 style="margin-bottom:0">🎮 他のゲームのデータ（${step}/2）</h3>
+          <button class="close-x" onclick="ExternalGame.close()">✕</button>
+        </div>
+        ${inner}
+      </div>
+    </div>`;
+}
 
 /* ============ 描画: 設定 ============ */
 function renderSettings(){
