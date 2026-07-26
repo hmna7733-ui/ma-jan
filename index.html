@@ -3009,6 +3009,87 @@ function classifyPlaystyle(stats, houjuuRate){
   return '標準型';
 }
 
+/* ============ プレイスタイル判定（7分類・今後追加/条件変更していく前提の拡張可能な定義） ============
+   レーティング・スコア・チップ収支・着順データという「結果データ」だけから判定する。
+   今後スタイルを増やしたり条件を変える場合は、この配列に追記・修正すればよい。 */
+const PLAYSTYLE_DEFS = {
+  4: [
+    { key:'developing', label:'発展途上型', desc:'レーティングが初期値から大きく下がり、平均着順も伸び悩んでいる、これからの段階です。',
+      condText:'レーティング1400未満 かつ 平均着順2.70以上',
+      check:(m)=> m.rating<1400 && m.avgRank>=2.70 },
+    { key:'balance', label:'バランス型', desc:'レーティングが高く、平均着順・ラス率ともに優秀な、王道の強者タイプです。どんなルールでも勝ち越せる実力があります。',
+      condText:'レーティング1650以上 かつ 平均着順2.40未満 かつ ラス率22%以下',
+      check:(m)=> m.rating>=1650 && m.avgRank<2.40 && m.lastRate<=22 },
+    { key:'chip', label:'祝儀特化型', desc:'着順そのものより、チップ（祝儀）を稼ぐことに長けたタイプです。一発・裏ドラ・赤牌を絡めた手作りが得意です。',
+      condText:'チップ収支（半荘平均）+0.5枚以上',
+      check:(m)=> m.chipPerGame!==undefined && m.chipPerGame>=0.5 },
+    { key:'attack', label:'超攻撃型', desc:'トップ率・ラス率がともに高く、大勝ちも大負けもする荒々しいタイプです。攻撃力は本物ですが、着順が安定しません。',
+      condText:'トップ率28%以上 かつ ラス率28%以上',
+      check:(m)=> m.topRate>=28 && m.lastRate>=28 },
+    { key:'defense', label:'守備型', desc:'ラス率が極めて低く、連対率も高い、徹底したリスク管理型です。トップは少なめでも大崩れしません。',
+      condText:'ラス率20%以下 かつ トップ率22〜24% かつ 連対率50%以上',
+      check:(m)=> m.lastRate<=20 && m.topRate>=22 && m.topRate<=24 && m.rentaiRate>=50 },
+    { key:'overpush', label:'押しすぎ型', desc:'トップもそこそこ取れていますが、それ以上にラスを引いてしまっている、攻め急ぎタイプです。',
+      condText:'ラス率30%以上 かつ トップ率24%以上 かつ 平均着順2.65以上',
+      check:(m)=> m.lastRate>=30 && m.topRate>=24 && m.avgRank>=2.65 },
+    { key:'passive', label:'消極型', desc:'トップ率が低く、2着・3着に挟まれがちで、チップ収支もマイナスの、勝負どころで前に出られていないタイプです。',
+      condText:'トップ率20%以下 かつ 2・3着率60%以上 かつ チップ収支マイナス',
+      check:(m)=> m.topRate<=20 && m.rank23Rate>=60 && m.chipPerGame!==undefined && m.chipPerGame<0 }
+  ],
+  3: [
+    { key:'developing', label:'発展途上型', desc:'レーティングが初期値から大きく下がり、平均着順も伸び悩んでいる、これからの段階です。',
+      condText:'レーティング1400未満 かつ 平均着順2.15以上',
+      check:(m)=> m.rating<1400 && m.avgRank>=2.15 },
+    { key:'balance', label:'バランス型', desc:'レーティングが高く、平均着順・ラス率ともに優秀な、王道の強者タイプです。攻守のメリハリが完全に取れています。',
+      condText:'レーティング1650以上 かつ 平均着順1.85未満 かつ ラス率28%以下',
+      check:(m)=> m.rating>=1650 && m.avgRank<1.85 && m.lastRate<=28 },
+    { key:'chip', label:'祝儀特化型', desc:'着順（ウマ）の減点を恐れず、抜きドラや一発・裏ドラでのチップ獲得を重視するタイプです。',
+      condText:'チップ収支（半荘平均）+0.8枚以上',
+      check:(m)=> m.chipPerGame!==undefined && m.chipPerGame>=0.8 },
+    { key:'attack', label:'超攻撃型', desc:'トップ率・ラス率がともに高く、大勝ちも大負けもする荒々しいタイプです。3人打ちらしい打点の高さが武器です。',
+      condText:'トップ率38%以上 かつ ラス率35%以上',
+      check:(m)=> m.topRate>=38 && m.lastRate>=35 },
+    { key:'defense', label:'守備型', desc:'サンマ特有のツモられ失点や高打点の放銃を徹底的に避ける、堅実なタイプです。',
+      condText:'ラス率28%以下 かつ トップ率30〜32% かつ 平均着順1.95未満',
+      check:(m)=> m.lastRate<=28 && m.topRate>=30 && m.topRate<=32 && m.avgRank<1.95 },
+    { key:'overpush', label:'押しすぎ型', desc:'勝負急ぎで、他家の当たり牌を引ききれずに高打点を放銃してしまいがちなタイプです。',
+      condText:'ラス率38%以上 かつ トップ率32%以上 かつ 平均着順2.10以上',
+      check:(m)=> m.lastRate>=38 && m.topRate>=32 && m.avgRank>=2.10 },
+    { key:'passive', label:'消極型', desc:'サンマの速度感についていけず、ダマテンに構えすぎたり、過剰にオリてツモられ貧乏になっているタイプです。',
+      condText:'トップ率28%以下 かつ 2着率40%以上 かつ チップ収支マイナス',
+      check:(m)=> m.topRate<=28 && m.rank2Rate>=40 && m.chipPerGame!==undefined && m.chipPerGame<0 }
+  ]
+};
+/* 判定の優先順位：発展途上→バランス→祝儀特化→残りをトップ率/ラス率の偏りで振り分け（資料の推奨フロー通り） */
+const PLAYSTYLE_PRIORITY_ORDER = ['developing','balance','chip'];
+function classifyPlaystyleV2(pcFilter, metrics){
+  if(metrics.n!==undefined && metrics.n<20){
+    return { key:'insufficient', label:'データ不足', desc:'対局数がまだ20戦未満のため、スタイルはまだ安定しません。対局数が増えると自動で判定されます。' };
+  }
+  const defs = PLAYSTYLE_DEFS[pcFilter];
+  if(!defs) return null;
+  for(const key of PLAYSTYLE_PRIORITY_ORDER){
+    const d = defs.find(x=>x.key===key);
+    if(d && d.check(metrics)) return d;
+  }
+  const remaining = defs.filter(d=>!PLAYSTYLE_PRIORITY_ORDER.includes(d.key));
+  for(const d of remaining){
+    if(d.check(metrics)) return d;
+  }
+  return { key:'standard', label:'標準型', desc:'特定の型に偏らない、バランスの取れた標準的なスタッツです。' };
+}
+/* 判定に必要なmetricsをまとめて作るヘルパー（AI分析・メンバー一覧などから共通で使う） */
+function buildPlaystyleMetrics(memberId, pcFilter){
+  const s = computeStats(memberId, pcFilter);
+  if(!s) return null;
+  const c = computeSettlementStats(memberId, pcFilter);
+  const rating = getMemberRating(memberId, pcFilter);
+  const chipPerGame = s.n ? c.chipCount/s.n : undefined;
+  const rank2Rate = (s.rankCount[1]||0)/s.n*100;
+  const rank23Rate = ((s.rankCount[1]||0)+(s.rankCount[2]||0))/s.n*100;
+  return { n:s.n, rating, avgRank:s.avgRank, topRate:s.topRate, lastRate:s.lastRate, rentaiRate:s.rentaiRate, chipPerGame, rank2Rate, rank23Rate };
+}
+
 function rankTierGrade(avgRank, playerCount){
   const table3 = [
     [1.80,'SSS','異常な数値です。歴史的な超上振れか、飛び抜けた実力を持っています。'],
@@ -3120,14 +3201,15 @@ function generateActionPlan(memberId, pcFilter){
         future:`持ち点が厳しくなった局面で早めに完全ベタオリへ切り替えられれば、大失点のリスクが激減し、収支のブレそのものが小さくなります。` });
     }
   }
-  const styleType = classifyPlaystyle(s, extAgg?extAgg.houjuuRate:undefined);
-  if(styleType==='攻撃重視型' || styleType==='超攻撃型'){
+  const playstyleMetrics = buildPlaystyleMetrics(memberId, pcFilter);
+  const styleDef = playstyleMetrics ? classifyPlaystyleV2(pcFilter, playstyleMetrics) : null;
+  if(styleDef && (styleDef.key==='attack' || styleDef.key==='overpush')){
     candidates.push({ priority:6, title:'勝負すべき局面の絞り込み',
-      reason:`打ち手のタイプは「${styleType}」で、攻めの姿勢自体は強みですが、勝負すべきでない愚形・安手でも押してしまっている可能性があります。`,
+      reason:`打ち手のタイプは「${styleDef.label}」で、攻めの姿勢自体は強みですが、勝負すべきでない愚形・安手でも押してしまっている可能性があります。`,
       future:`「押すべき手」と「降りるべき手」の境界線がさらに明確になると、攻撃力はそのままに放銃だけが減り、収支の伸びが加速します。` });
-  } else if(styleType==='守備重視型' || styleType==='堅実・守備型'){
+  } else if(styleDef && (styleDef.key==='defense' || styleDef.key==='passive')){
     candidates.push({ priority:6, title:'勝負手でもう一段踏み込む勇気',
-      reason:`打ち手のタイプは「${styleType}」で、守備は堅い一方、満貫クラスの勝負手でも降りすぎている可能性があります。`,
+      reason:`打ち手のタイプは「${styleDef.label}」で、守備は堅い一方、満貫クラスの勝負手でも降りすぎている可能性があります。`,
       future:`「打点が十分ある時は踏み込む」という基準を持てるようになると、守備力はそのままにトップ率・収支が底上げされます。` });
   }
   if(rulesWithEnough.length>=2){
@@ -3136,6 +3218,23 @@ function generateActionPlan(memberId, pcFilter){
       candidates.push({ priority:4, title:`「${worstRule.rule.name}」への適応`,
         reason:`他のルールに比べて「${worstRule.rule.name}」（${worstRule.n}戦・平均${worstRule.avgRank.toFixed(2)}位）だけ苦戦しています。ルール特有の点差・オカへの適応がまだ甘い可能性があります。`,
         future:`得意なルールで身についている判断基準を、このルールの点差・順位点に合わせて調整できれば、打つルールを選ばない安定した実力に変わります。` });
+    }
+  }
+  // 成長ロードマップから、現在の段階（想定ランク＝rawLevel）で習得すべき具体的なロジックを候補に加える。
+  // 初心者〜見習いほど基礎の優先度を高くし、上級・プロ級でもその段階の引き出しを提示する。
+  if(grade){
+    const stageData = MAHJONG_ROADMAP[Math.max(0,Math.min(4,grade.rawLevel))];
+    if(stageData){
+      const basePriority = grade.rawLevel<=1 ? 9 : (grade.rawLevel===2 ? 6.5 : 5.5);
+      stageData.logics.slice(0,2).forEach((logicText, idx)=>{
+        const sepIdx = logicText.indexOf('：');
+        const logicTitle = sepIdx>0 ? logicText.slice(0,sepIdx) : logicText;
+        const logicDetail = sepIdx>0 ? logicText.slice(sepIdx+1) : logicText;
+        candidates.push({ priority: basePriority - idx*0.5,
+          title: `【${stageData.stage}の基礎】${logicTitle}`,
+          reason: `現在の段階（${stageData.stage}）で習得すべきロジックです。${logicDetail}`,
+          future: `これが自然にできるようになると、「${stageData.theme}」に近づき、${stageData.keyToNext}` });
+      });
     }
   }
   if(candidates.length===0){
@@ -3187,18 +3286,22 @@ function generateOpponentInsight(memberId, oid, pcFilter){
     else if(gap>=50) push('neutral', `相手はRで${Math.round(gap)}ほど上なので、ある程度の差は実力差として自然な範囲です。`);
   }
 
-  // タイプ比較（お互いのローカルデータから推定できる範囲で）
-  const myStats = computeStats(memberId, pcFilter);
-  const oppStats = computeStats(oid, pcFilter);
-  const myStyle = classifyPlaystyle(myStats);
-  const oppStyle = classifyPlaystyle(oppStats);
-  if(myStyle && oppStyle){
-    push('neutral', `あなたのタイプは「${myStyle}」、${memberName(oid)}さんのタイプは「${oppStyle}」と推定されます。`);
+  // タイプ比較（新しい7分類システムで判定）
+  const myMetrics = buildPlaystyleMetrics(memberId, pcFilter);
+  const oppMetrics = buildPlaystyleMetrics(oid, pcFilter);
+  const myStyleDef = myMetrics ? classifyPlaystyleV2(pcFilter, myMetrics) : null;
+  const oppStyleDef = oppMetrics ? classifyPlaystyleV2(pcFilter, oppMetrics) : null;
+  if(myStyleDef && oppStyleDef && myStyleDef.key!=='insufficient' && oppStyleDef.key!=='insufficient'){
+    push('neutral', `あなたのタイプは「${myStyleDef.label}」、${memberName(oid)}さんのタイプは「${oppStyleDef.label}」と推定されます。`);
     if(o.scoreDiff<0){
-      if(myStyle.includes('守備') && oppStyle.includes('攻撃')){
-        push('bad', `守備型のあなたに対して相手は攻撃型のため、相手のスピードに押し込まれて受け身になりやすい組み合わせです。相手の仕掛けが入った時点で早めに勝負手か撤退かを見極める意識を持つと、この相性差を縮められそうです。`);
-      } else if(myStyle.includes('攻撃') && oppStyle.includes('守備')){
-        push('bad', `攻撃型のあなたに対して相手は守備型のため、無理に押した手が相手の的確なベタオリに阻まれている可能性があります。相手が早々に安全牌を並べてきたら、それ以上の深追いは損になりやすい相手です。`);
+      const myDefensive = ['defense','passive'].includes(myStyleDef.key);
+      const oppAggressive = ['attack','overpush'].includes(oppStyleDef.key);
+      const myAggressive = ['attack','overpush'].includes(myStyleDef.key);
+      const oppDefensive = ['defense','passive'].includes(oppStyleDef.key);
+      if(myDefensive && oppAggressive){
+        push('bad', `${myStyleDef.label}のあなたに対して相手は${oppStyleDef.label}のため、相手のスピードに押し込まれて受け身になりやすい組み合わせです。相手の仕掛けが入った時点で早めに勝負手か撤退かを見極める意識を持つと、この相性差を縮められそうです。`);
+      } else if(myAggressive && oppDefensive){
+        push('bad', `${myStyleDef.label}のあなたに対して相手は${oppStyleDef.label}のため、無理に押した手が相手の的確なベタオリに阻まれている可能性があります。相手が早々に安全牌を並べてきたら、それ以上の深追いは損になりやすい相手です。`);
       }
     }
   }
@@ -3274,14 +3377,11 @@ function generateInsights(memberId, pcFilter){
     const stage = stageFromLevel(mergedGrade.rawLevel);
     stageResult = { label: stage.label, text: `現在のデータからは「${stage.view}」という視座に近いと推定されます。${stage.trait}` };
 
-    // 攻撃重視型・守備重視型の診断（他ゲームの放銃率があればより精度が上がる）
-    const styleType = classifyPlaystyle(s, extAgg?extAgg.houjuuRate:undefined);
-    if(styleType){
-      if(styleType==='攻撃重視型' || styleType==='超攻撃型'){
-        styleResult = { label: styleType, text: `${extAgg&&extAgg.houjuuRate!==undefined?`放銃率${extAgg.houjuuRate.toFixed(1)}%とトップ率の高さから、`:''}高打点・トップを積極的に狙いにいくタイプと推定されます。攻めの姿勢自体は強みですが、根本課題として「勝負すべきでない愚形・安手での無筋押し」が混ざっていないか、押し引きボーダーと照らして見直す価値があります。` };
-      } else if(styleType==='守備重視型' || styleType==='堅実・守備型'){
-        styleResult = { label: styleType, text: `${extAgg&&extAgg.houjuuRate!==undefined?`放銃率${extAgg.houjuuRate.toFixed(1)}%の低さから、`:''}失点を避ける技術は高い一方、根本課題として「勝負すべき局面でも降りすぎている（先制を取り切れていない）」可能性があります。満貫以上の手が入った時は、もう一段踏み込む意識を持てると収支が伸びそうです。` };
-      }
+    // 打ち手のタイプ診断（レーティング・着順・チップ収支から7分類で判定）
+    const playstyleMetrics = buildPlaystyleMetrics(memberId, pcFilter);
+    if(playstyleMetrics){
+      const styleDef = classifyPlaystyleV2(pcFilter, playstyleMetrics);
+      if(styleDef) styleResult = { key: styleDef.key, label: styleDef.label, text: styleDef.desc };
     }
 
     // 長期データでの「言い訳排除」診断：サンプルが十分なのに成績が悪い場合、運のせいにできないことを直言する（想定ランク基準）
@@ -3814,7 +3914,7 @@ function renderAnalysis(){
       const hasGame = !!comp.game;
       const smallBadge = (label, g, n)=>{
         const gc = compositeGradeColor(g.level);
-        return `<div class="grow" style="background:${gc.grad};border-radius:14px;padding:12px;text-align:center;box-shadow:0 4px 14px -6px ${gc.glow}, inset 0 1px 0 rgba(255,255,255,.25)">
+        return `<div class="grow" style="background:${gc.grad};border-radius:14px;padding:12px;text-align:center;box-shadow:0 4px 14px -6px ${gc.glow}, inset 0 1px 0 rgba(255,255,255,.25);cursor:pointer" onclick='Analysis.showNextGradeGap(${JSON.stringify(pcFilter)}, ${JSON.stringify(g)}, ${JSON.stringify(label)})'>
           <div style="font-size:10.5px;font-weight:700;color:${gc.text};opacity:.85">${label}（${n}戦）</div>
           <div style="font-size:30px;font-weight:900;color:${gc.text};line-height:1.1;margin:2px 0">${g.letter}<span style="font-size:10px;font-weight:700;opacity:.85">ランク</span></div>
           <div style="font-size:11px;font-weight:700;color:${gc.text};opacity:.9">${g.label}</div>
@@ -3829,7 +3929,7 @@ function renderAnalysis(){
       }
       const mainGrade = comp.merged || comp.real;
       const gc = compositeGradeColor(mainGrade.level);
-      html+=`<div style="background:${gc.grad};border-radius:16px;padding:18px;text-align:center;margin-bottom:10px;box-shadow:0 6px 20px -6px ${gc.glow}, inset 0 1px 0 rgba(255,255,255,.25)">
+      html+=`<div style="background:${gc.grad};border-radius:16px;padding:18px;text-align:center;margin-bottom:10px;box-shadow:0 6px 20px -6px ${gc.glow}, inset 0 1px 0 rgba(255,255,255,.25);cursor:pointer" onclick='Analysis.showNextGradeGap(${JSON.stringify(pcFilter)}, ${JSON.stringify(mainGrade)}, ${JSON.stringify(hasGame?"通算":"総合")})'>
         <div style="font-size:11.5px;font-weight:700;color:${gc.text};opacity:.85;letter-spacing:1px">${pcFilter}人打ち ${hasGame?'通算':''}総合グレード</div>
         <div style="font-size:58px;font-weight:900;color:${gc.text};line-height:1.15;text-shadow:0 2px 6px rgba(0,0,0,.2);margin:4px 0">${mainGrade.letter}<span style="font-size:20px;font-weight:800">ランク</span></div>
         <div style="font-size:16px;font-weight:800;color:${gc.text}">（${mainGrade.label}）</div>
@@ -3853,13 +3953,14 @@ function renderAnalysis(){
       </div>`;
     }
     if(result.styleResult){
-      html+=`<div class="rating-card" style="background:linear-gradient(160deg,#1a0d05,#2b1207 55%,#140803);border:1.5px solid rgba(230,180,90,.5);padding:16px;margin-bottom:14px">
+      html+=`<div class="rating-card" style="background:linear-gradient(160deg,#1a0d05,#2b1207 55%,#140803);border:1.5px solid rgba(230,180,90,.5);padding:16px;margin-bottom:14px;cursor:pointer" onclick='Analysis.showPlaystyleList(${JSON.stringify(pcFilter)}, ${JSON.stringify(result.styleResult.key)})'>
         <div class="rating-card-icon" style="font-size:70px">🎭</div>
         <div class="rating-card-shine"></div>
         <div style="position:relative;z-index:1">
           <div style="font-size:11.5px;font-weight:700;color:rgba(255,255,255,.75);letter-spacing:1px">打ち手のタイプ</div>
           <div style="font-size:24px;font-weight:900;color:#fff3d0;margin:2px 0">${esc(result.styleResult.label)}</div>
           <div style="font-size:12.5px;color:rgba(255,243,208,.92);line-height:1.6;margin-top:4px">${esc(result.styleResult.text)}</div>
+          <div style="font-size:10.5px;color:rgba(255,243,208,.7);margin-top:8px">タップしてスタイル一覧・獲得条件を見る ▸</div>
         </div>
       </div>`;
     }
@@ -3898,7 +3999,8 @@ function renderAnalysis(){
             ${pcFilter!=='all'?`
             <span class="chip" style="padding:5px 10px;font-size:11.5px;font-weight:600;background:rgba(255,255,255,.16);color:#fff;cursor:default">平均${s.avgRank.toFixed(2)}位</span>
             <span class="chip" style="padding:5px 10px;font-size:11.5px;font-weight:600;background:rgba(255,255,255,.16);color:#fff;cursor:default">トップ${s.topRate.toFixed(0)}%</span>
-            <span class="chip" style="padding:5px 10px;font-size:11.5px;font-weight:600;background:rgba(255,255,255,.16);color:#fff;cursor:default">ラス${s.lastRate.toFixed(0)}%</span>`:''}
+            <span class="chip" style="padding:5px 10px;font-size:11.5px;font-weight:600;background:rgba(255,255,255,.16);color:#fff;cursor:default">ラス${s.lastRate.toFixed(0)}%</span>
+            ${(()=>{ const pm=buildPlaystyleMetrics(m.id,pcFilter); const sd=pm?classifyPlaystyleV2(pcFilter,pm):null; return sd?`<span class="chip" style="padding:5px 10px;font-size:11.5px;font-weight:700;background:#e6b84a;color:#3a2905" onclick="event.stopPropagation();Analysis.showPlaystyleList(${pcFilter}, '${sd.key}')">🎭 ${esc(sd.label)}</span>`:''; })()}`:''}
           </div>
           <div class="row" style="gap:16px;margin-top:10px;padding-top:10px;border-top:1px dashed rgba(255,255,255,.25)">
             <div class="grow">
@@ -4139,6 +4241,32 @@ const Analysis = {
   clearOpponent(){ UI.analysisOpponentId=null; render(); },
   toggleOpponentExpand(oid){ UI.expandedOpponentId = (UI.expandedOpponentId===oid) ? null : oid; render(); },
   toggleExternalGameExpand(id){ UI.expandedExternalGameId = (UI.expandedExternalGameId===id) ? null : id; render(); },
+  showPlaystyleList(pcFilter, currentKey){
+    const defs = PLAYSTYLE_DEFS[pcFilter] || [];
+    const rows = defs.map(d=>{
+      const isCurrent = d.key===currentKey;
+      return `<div style="border:1.5px solid ${isCurrent?'#e6b84a':'var(--border)'};background:${isCurrent?'rgba(230,180,90,.12)':'transparent'};border-radius:10px;padding:10px 12px;margin-bottom:8px">
+        <div class="row" style="justify-content:space-between;align-items:center">
+          <div style="font-weight:800;font-size:14px">${isCurrent?'👉 ':''}${esc(d.label)}</div>
+          ${isCurrent?'<span class="chip" style="background:#e6b84a;color:#3a2905;cursor:default;font-weight:700">現在のタイプ</span>':''}
+        </div>
+        <div style="font-size:12px;color:var(--sub);margin-top:4px">${esc(d.desc)}</div>
+        <div class="small-note" style="margin-top:6px">獲得条件：${esc(d.condText)}</div>
+      </div>`;
+    }).join('');
+    document.getElementById('modalRoot').innerHTML = `
+      <div class="modal-overlay" onclick="if(event.target===this) closeInfoModal()">
+        <div class="modal" style="max-width:640px;max-height:85vh;overflow-y:auto">
+          <div class="row" style="justify-content:space-between;align-items:center;margin-bottom:6px">
+            <h3 style="margin-bottom:0">🎭 打ち手のタイプ一覧（${pcFilter}人打ち）</h3>
+            <button class="close-x" onclick="closeInfoModal()">✕</button>
+          </div>
+          <div class="small-note" style="margin-bottom:10px">レーティング・平均着順・トップ率・ラス率・連対率・チップ収支から判定しています。判定は「発展途上型→バランス型→祝儀特化型→残りをトップ率/ラス率の偏りで判定」の優先順で行われます。今後、条件や種類が追加・変更される場合があります。</div>
+          ${rows}
+          <button class="btn block" style="margin-top:8px" onclick="closeInfoModal()">閉じる</button>
+        </div>
+      </div>`;
+  },
   showActionPlan(targetId, pcFilter){
     const key = targetId+'_'+pcFilter;
     UI.actionPlanFor = (UI.actionPlanFor===key) ? null : key;
@@ -4169,6 +4297,71 @@ const Analysis = {
           <div class="small-note" style="margin-bottom:12px">初心者からプロ級まで、各段階で求められる視野・ロジック・よくある弱点をまとめました。主に4人打ちを軸とした考え方です。3人打ちは高打点環境などの違いはありますが、押し引き・状況判断・メンタル管理という骨格は共通しています。断定的な表現は避け、確率的な傾向として記載しています。</div>
           ${sections}
           <button class="btn block" style="margin-top:4px" onclick="closeInfoModal()">閉じる</button>
+        </div>
+      </div>`;
+  },
+  showNextGradeGap(pcFilter, grade, sourceLabel){
+    const AVG_THRESHOLDS = [1.5,2.5,3.5,4.2];
+    const isMaxSS = grade.rawLevel>=4 && grade.letter==='SS';
+    let body;
+    if(isMaxSS){
+      body = `<div style="text-align:center;padding:20px 10px">
+        <div style="font-size:40px">🏆</div>
+        <div style="font-weight:800;font-size:16px;margin-top:8px">既に最高評価（SSランク）に到達しています</div>
+        <div class="small-note" style="margin-top:6px">これ以上の到達点はありません。この水準を維持できるよう、今のバランスの良さを大切にしてください。</div>
+      </div>`;
+    } else {
+      const nextLevel = Math.min(grade.rawLevel+1, 4);
+      const nextLabel = grade.rawLevel>=4 ? 'SS（最上位）' : GRADE_LEVELS[nextLevel]+'（'+GRADE_LETTERS[nextLevel]+'ランク）';
+      const avgTarget = grade.rawLevel>=4 ? 4.6 : AVG_THRESHOLDS[grade.rawLevel];
+      const avgGap = Math.max(0, avgTarget-grade.continuousAvg);
+      let weakBlock = '';
+      if(grade.hasWeakPoint){
+        const weakItem = grade.breakdown.reduce((min,b)=>b.continuousLevel<min.continuousLevel?b:min, grade.breakdown[0]);
+        weakBlock = `<div style="background:rgba(220,38,38,.1);padding:10px 12px;border-radius:8px;margin-bottom:12px;font-size:12.5px">
+          <b style="color:#b91c1c">⚠️ 弱点による頭打ち：</b>「${esc(weakItem.label)}」が基準の「普通」にも届いていません（現在値: ${weakItem.value.toFixed(2)}）。総合力が伴っていないと判断され、他の項目がどれだけ良くても上級（プロ級・SS）には到達できません。まずここを底上げすることが最優先です。
+        </div>`;
+      }
+      const rows = grade.breakdown.map(b=>{
+        let target, gapText, statusIcon;
+        if(b.level>=4){
+          if(b.ssHit){
+            target = b.ssThreshold; gapText='SSライン到達済み'; statusIcon='✅';
+          } else {
+            target = b.ssThreshold;
+            const gap = b.lowerBetter ? Math.max(0,b.value-target) : Math.max(0,target-b.value);
+            gapText = `SSラインまであと${gap.toFixed(1)}（目標:${target}）`; statusIcon='🌟';
+          }
+        } else {
+          target = b.thresholds[b.level];
+          const gap = b.lowerBetter ? Math.max(0,b.value-target) : Math.max(0,target-b.value);
+          if(gap<=0){ gapText='次の段階の基準は満たしています'; statusIcon='✅'; }
+          else { gapText = `あと${gap.toFixed(1)}（目標:${target}）`; statusIcon='▶️'; }
+        }
+        return `<div class="row" style="justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid var(--border)">
+          <div>
+            <div style="font-weight:700;font-size:12.5px">${statusIcon} ${esc(b.label)}</div>
+            <div class="small-note">現在値: ${b.value.toFixed(2)}</div>
+          </div>
+          <div style="font-size:12px;text-align:right;max-width:55%">${esc(gapText)}</div>
+        </div>`;
+      }).join('');
+      body = `
+        <div class="small-note" style="margin-bottom:10px">総合平均は${grade.continuousAvg.toFixed(2)}。次の「${nextLabel}」には平均${avgTarget.toFixed(1)}以上が必要です（あと${avgGap.toFixed(2)}）。</div>
+        ${weakBlock}
+        <div>${rows}</div>
+      `;
+    }
+    document.getElementById('modalRoot').innerHTML = `
+      <div class="modal-overlay" onclick="if(event.target===this) closeInfoModal()">
+        <div class="modal" style="max-width:640px;max-height:85vh;overflow-y:auto">
+          <div class="row" style="justify-content:space-between;align-items:center;margin-bottom:6px">
+            <h3 style="margin-bottom:0">📈 ${esc(sourceLabel)}：次のグレードまで</h3>
+            <button class="close-x" onclick="closeInfoModal()">✕</button>
+          </div>
+          <div class="small-note" style="margin-bottom:10px">現在：${grade.letter}ランク（${grade.label}）</div>
+          ${body}
+          <button class="btn block" style="margin-top:12px" onclick="closeInfoModal()">閉じる</button>
         </div>
       </div>`;
   },
