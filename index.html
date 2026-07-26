@@ -3110,8 +3110,8 @@ const PLAYSTYLE_DEFS = {
       condText:'平均着順1.90〜1.95 かつ 平均スコア収支+10以上',
       check:(m)=> m.avgRank>=1.90 && m.avgRank<=1.95 && m.score!==undefined && m.score>=10 },
     { key:'perfect', tier:3, label:'完全無欠型', desc:'トップ率・ラス率のどちらも極めて優秀な、サンマの押し引きを完全にマスターした非の打ち所がない最強タイプです。',
-      condText:'トップ率38%以上 かつ ラス率26%以下 かつ 平均着順1.80未満',
-      check:(m)=> m.topRate>=38 && m.lastRate<=26 && m.avgRank<1.80 }
+      condText:'トップ率40%以上 かつ ラス率28%未満 かつ 平均着順1.85未満',
+      check:(m)=> m.topRate>=40 && m.lastRate<28 && m.avgRank<1.85 }
   ]
 };
 /* スタイル判定：条件を満たす全スタイルを集め、最も「上位互換」（tierが高い）ものを選ぶ。
