@@ -2822,11 +2822,22 @@ const METRIC_LABELS = {
   rentaiRate:'連対率', chip:'チップ収支（半荘平均）', agariRate:'和了率', houjuuRate:'放銃率',
   wazyuusa:'和銃差（和了率－放銃率）'
 };
-/* 各指標の重み。和銃差は「実力を最も雄弁に語る指標」として最重要視、
+/* 各指標の基本の重み。和銃差は「実力を最も雄弁に語る指標」として最重要視。
+   人数別の上書き（3人打ちはラス率、4人打ちは放銃率をそれぞれ重み2に）はMETRIC_WEIGHT_OVERRIDESで指定する。
    レーティング・トップ率は「規定対局数を大きく超えた場合」にさらに重みを増す（ratingTopBoost参照）。 */
 const METRIC_WEIGHTS = {
   rating:2, score:1, topRate:2, lastRate:1, rentaiRate:1, chip:1, agariRate:1, houjuuRate:1, wazyuusa:3
 };
+const METRIC_WEIGHT_OVERRIDES = {
+  3:   { lastRate:2 },
+  '3i':{ lastRate:2 },
+  4:   { houjuuRate:2 }
+};
+function metricWeight(key, pcFilter){
+  const ov = METRIC_WEIGHT_OVERRIDES[pcFilter];
+  if(ov && ov[key]!==undefined) return ov[key];
+  return METRIC_WEIGHTS[key]||1;
+}
 const GRADE_TABLES = {
   4: {
     rating:     [1500,1650,1800,2000],
@@ -2841,14 +2852,17 @@ const GRADE_TABLES = {
   },
   3: {
     rating:     [1500,1650,1800,2000],
-    score:      [-15.0,-4.0,8.0,20.0], // 3人打ち・オカなし（30000持ち40000返し・ウマ10-20）基準
+    score:      [-15.0,-4.0,8.0,15.0], // 3人打ち・オカなし（30000持ち40000返し・ウマ10-20）基準
     topRate:    [28,31,34,37],
     lastRate:   [40,35,31,26],   // 低いほど良い
     rentaiRate: [60,63,67,72],
     chip:       [-2.9,-0.9,1.1,5.1],
     agariRate:  [25,28,30,32],
     houjuuRate: [18,16,14.5,13.5], // 低いほど良い
-    wazyuusa:   [6.0,9.0,12.0,15.0] // 資料の「15%以上が最高峰」を基準に構成（4人打ちの伸び率から類推）
+    wazyuusa:   [6.0,9.0,12.0,15.0], // 資料の「15%以上が最高峰」を基準に構成（4人打ちの伸び率から類推）
+    /* SSライン（プロ級のさらに上）を指標ごとに明示指定。指定が無い指標は「上級→プロ級の伸び幅を
+       もう一段延長した値」を自動算出して使う。 */
+    ssLines: { rating:2100, score:20, topRate:40, lastRate:23, rentaiRate:77, chip:7, agariRate:34, houjuuRate:12.5, wazyuusa:18 }
   },
   /* 3人打ち・完全2飜縛り＋赤各2枚＋北抜きドラの超高打点環境専用の基準。
      スコア・和了率・放銃率は資料の専用データを採用し、レーティング・トップ率・ラス率・
@@ -2880,17 +2894,34 @@ function levelHigherBetter(value, thresholds){
 function levelLowerBetter(value, thresholds){
   let lvl=0; thresholds.forEach((t,i)=>{ if(value<t) lvl=i+1; }); return lvl;
 }
-/* プロ級（レベル4）のさらに上、「SSライン」を算出する。
-   単純な固定パーセンテージではなく、そのカテゴリの「上級→プロ級」の伸び幅をそのまま
-   もう一段上に延長した値を基準にする（指標ごとに意味のある刻み幅で厳密に判定するため）。 */
-function ssThreshold(thresholds, lowerBetter){
-  // 上級→プロ級の刻み幅をそのまま延長する。thresholds配列は上げ潮/下げ潮どちらの並びでも
-  // 「その並びの続き」を足すだけで正しい方向に延びるので、lowerBetterで符号を分ける必要はない。
+/* プロ級（レベル4）のさらに上、「SSライン」を算出する。テーブルにssLinesの明示指定があればそれを使い、
+   無ければそのカテゴリの「上級→プロ級」の伸び幅をそのまま延長した値を自動算出する。 */
+function ssThreshold(thresholds, key, table){
+  if(table && table.ssLines && table.ssLines[key]!==undefined) return table.ssLines[key];
   const step = thresholds[3]-thresholds[2];
   return thresholds[3]+step;
 }
-function gradeLetter(level, anySSHit){
-  if(level>=4) return anySSHit ? 'SS' : 'S';
+/* 各指標を0〜5の連続値（実質10段階以上の精度）でスコア化する。
+   例：レーティング1950は、上級(1800)〜プロ級(2000)の間の75%地点なので約3.75と算出される。
+   4=プロ級ちょうど、5=SSライン到達（それ以上は5でクリップ）。 */
+function continuousLevel(value, thresholds, lowerBetter, ssLine){
+  const dir = lowerBetter ? -1 : 1;
+  const t = thresholds.map(x=>x*dir);
+  const ss = ssLine*dir;
+  const e0 = t[0]-(t[1]-t[0]);
+  const edges = [e0,t[0],t[1],t[2],t[3],ss];
+  const v = value*dir;
+  if(v<=edges[0]) return 0;
+  if(v>=edges[5]) return 5;
+  for(let i=0;i<5;i++){
+    if(v>=edges[i] && v<edges[i+1]){
+      return i + (v-edges[i])/(edges[i+1]-edges[i]);
+    }
+  }
+  return 4;
+}
+function gradeLetter(level, ssCount){
+  if(level>=4) return ssCount>=2 ? 'SS' : 'S';
   return GRADE_LETTERS[Math.max(0,Math.min(4,level))];
 }
 /* metrics: {rating, score, topRate, lastRate, rentaiRate, chip, agariRate, houjuuRate, totalGames} のうち
@@ -2906,10 +2937,12 @@ function computeCompositeGrade(pcFilter, metrics){
     if(value===undefined) return;
     const th = table[key];
     const lvl = lower ? levelLowerBetter(value, th) : levelHigherBetter(value, th);
-    const ssTh = ssThreshold(th, lower);
+    const ssTh = ssThreshold(th, key, table);
+    const cLevel = continuousLevel(value, th, !!lower, ssTh);
     const ssHit = lower ? value<ssTh : value>=ssTh;
-    const weight = (METRIC_WEIGHTS[key]||1) + (extraWeight||0) + (ssHit?1:0);
-    breakdown.push({ key, label:METRIC_LABELS[key], value, thresholds:th, lowerBetter:!!lower, level:lvl, ssThreshold:ssTh, ssHit, weight });
+    const nearSS = cLevel>=4.5; // プロ級とSSラインの中間点より上＝「SSに近い」
+    const weight = metricWeight(key, pcFilter) + (extraWeight||0) + (ssHit?1:0);
+    breakdown.push({ key, label:METRIC_LABELS[key], value, thresholds:th, lowerBetter:!!lower, level:lvl, continuousLevel:cLevel, ssThreshold:ssTh, ssHit, nearSS, weight });
   };
   addMetric('rating', metrics.rating, false, ratingTopBoost);
   addMetric('score', metrics.score, false);
@@ -2924,15 +2957,19 @@ function computeCompositeGrade(pcFilter, metrics){
   }
   if(breakdown.length===0) return null;
   const weightSum = breakdown.reduce((a,b)=>a+b.weight,0);
-  const rawLevel = Math.round(breakdown.reduce((a,b)=>a+b.level*b.weight,0)/weightSum);
-  const anySSHit = breakdown.some(b=>b.ssHit);
+  // 連続値（10段階相当の精度）の加重平均で内部的な位置づけを算出し、最後に四捨五入して表示用レベルにする
+  const continuousAvg = breakdown.reduce((a,b)=>a+Math.min(b.continuousLevel,4.999)*b.weight,0)/weightSum;
+  const rawLevel = Math.round(continuousAvg);
+  // SSは「1つだけ突出」では成立させず、SSライン到達 or SSラインに近い（プロ級との中間点より上）指標が
+  // 2つ以上ある場合にのみ、総合的な強さの証拠として認める
+  const ssCount = breakdown.filter(b=>b.nearSS).length;
   let capLevel = 0;
   GAME_COUNT_CAP_THRESHOLDS.forEach((t,i)=>{ if(totalGames>=t) capLevel=i+1; });
   const finalLevel = Math.min(rawLevel, capLevel);
   return {
-    level:finalLevel, label:GRADE_LEVELS[finalLevel], letter:gradeLetter(finalLevel, anySSHit && finalLevel>=4),
-    rawLevel, rawLabel:GRADE_LEVELS[rawLevel], rawLetter:gradeLetter(rawLevel, anySSHit && rawLevel>=4),
-    capped: rawLevel>capLevel, capLevel, metricsUsed:breakdown.length, breakdown, anySSHit, totalGames
+    level:finalLevel, label:GRADE_LEVELS[finalLevel], letter:gradeLetter(finalLevel, ssCount),
+    rawLevel, rawLabel:GRADE_LEVELS[rawLevel], rawLetter:gradeLetter(rawLevel, ssCount),
+    capped: rawLevel>capLevel, capLevel, metricsUsed:breakdown.length, breakdown, ssCount, continuousAvg, totalGames
   };
 }
 /* 着順・ラス率などから、ざっくりとした打ち手のタイプ（攻撃寄りか守備寄りか）を推定 */
@@ -4002,7 +4039,9 @@ const Analysis = {
         return `<td style="padding:6px 8px;text-align:center;font-size:11.5px;${isCurrent?'background:var(--accent-light);font-weight:800;border-radius:6px':''}">${cellText}${isCurrent?' ✓':''}</td>`;
       }).join('');
       const ssCellText = b.lowerBetter ? `${b.ssThreshold.toFixed(1)}未満` : `${b.ssThreshold.toFixed(1)}以上`;
-      const ssCell = `<td style="padding:6px 8px;text-align:center;font-size:11.5px;background:${b.ssHit?'linear-gradient(135deg,#f7d774,#e6c052)':'#fdf3d0'};font-weight:${b.ssHit?800:600};border-radius:6px;color:#3a2905">${ssCellText}${b.ssHit?' 🌟':''}</td>`;
+      const ssBg = b.ssHit?'linear-gradient(135deg,#f7d774,#e6c052)':(b.nearSS?'#f6e3a1':'#fdf3d0');
+      const ssMark = b.ssHit?' 🌟':(b.nearSS?' ✨':'');
+      const ssCell = `<td style="padding:6px 8px;text-align:center;font-size:11.5px;background:${ssBg};font-weight:${b.ssHit?800:(b.nearSS?700:600)};border-radius:6px;color:#3a2905">${ssCellText}${ssMark}</td>`;
       return `<tr>
         <td style="padding:6px 8px;font-size:12px;font-weight:700;white-space:nowrap">${b.label}<br><span class="small-note">現在値: ${b.value.toFixed(2)}　重み:${b.weight}</span></td>
         ${cells}
@@ -4016,7 +4055,7 @@ const Analysis = {
             <h3 style="margin-bottom:0">📋 判定基準の詳細</h3>
             <button class="close-x" onclick="closeInfoModal()">✕</button>
           </div>
-          <div class="small-note" style="margin-bottom:10px">「✓」が付いている欄が、その項目が現在達している段階です。総合グレードは、各項目の「重み」を加味した加重平均で決めています（和銃差は最重要、規定対局数を大きく超えるとレーティング・トップ率の重みも増します）。金色の欄（🌟）は、プロ級のさらに上「SSライン」の基準です。1つでも到達しているとSSランクの判定材料になります。対局数キャップにより表示上のランクは下がっていても、この内訳は対局数の影響を受けない「実力そのもの」の判定です。</div>
+          <div class="small-note" style="margin-bottom:10px">「✓」が付いている欄が、その項目が現在達している段階です。総合グレードは、各項目の値を0〜5の連続値（プロ級とSSラインの間も細かく採点）に変換し、「重み」を加味した加重平均で算出しています（和銃差・レーティングは最重要、規定対局数を大きく超えるとレーティング・トップ率の重みもさらに増します）。金色の欄（🌟）はSSラインに到達、薄い金色（✨）はSSラインとプロ級の中間より上を意味します。1つだけでは突出とみなさず、🌟または✨が2つ以上ある場合にSSランクの判定材料になります。対局数キャップにより表示上のランクは下がっていても、この内訳は対局数の影響を受けない「実力そのもの」の判定です。</div>
           <div style="overflow-x:auto">
             <table style="width:100%;border-collapse:collapse;font-size:11.5px">
               <thead><tr>
