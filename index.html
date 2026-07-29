@@ -743,6 +743,7 @@ const CHIP_PRESETS = [100, 200, 300, 500, 1000, 2000];
 function ensureRuleDefaults(r){
   const def = {
     okaEnabled:false, oka:0, babaEnabled:false, babaFromRank:2, babaAmount:0, tobiAri:true, tobiPenalty:0, tobiRule:'zero',
+    freeEnabled:false, freeGameFee:300, freeTopPrize:0, freeShopName:'お店',
     kuitanAri:true, atozukeAri:true, akaDoraEnabled:true,
     stick500Enabled:true, stick100Enabled:true,
     ippatsuAri:true, uradoraAri:true, kanUradoraAri:true,
@@ -760,7 +761,7 @@ function ensureRuleDefaults(r){
     roundingThresholdValue:30000, roundingAboveMode:'down', roundingBelowMode:'up',
     rateEnabled:false, rate:0,
     chipEnabled:false, chipValue:500, chipCondition:'none', yakumanTsumoChip:10, yakumanRonChip:20, chipPerGameEnabled:false,
-    renchanType:'tenpai_keishiki', shibariType:'none', shibariHan:2,
+    renchanType:'agari', shibariType:'none', shibariHan:2,
     fuCalculation:true, tsumoLoss:false, tsumoPinAri:true,
     kitaHandling:'nukidora',
     specialTiles:[], memo:''
@@ -1031,9 +1032,11 @@ function renderHome(){
   } else {
     const totals={};
     let babaSum=0;
+    let freeShopSum=0;
     todaySessions.forEach(s=>{
       s.players.forEach(p=>{ totals[p.memberId]=(totals[p.memberId]||0)+p.point; });
       babaSum += s.babaTotal||0;
+      freeShopSum += s.freeShopTotal||0;
     });
     const arr = Object.entries(totals).sort((a,b)=>b[1]-a[1]);
     arr.forEach(([mid,total],idx)=>{
@@ -1052,6 +1055,12 @@ function renderHome(){
       html += `<div class="row" style="justify-content:space-between;align-items:center;padding:8px 0">
         <span style="color:rgba(255,243,208,.85)">🏮 場代</span>
         <span style="font-weight:800;color:#7fe89a">${sign(Math.round(babaSum*10)/10)}</span>
+      </div>`;
+    }
+    if(freeShopSum){
+      html += `<div class="row" style="justify-content:space-between;align-items:center;padding:8px 0">
+        <span style="color:rgba(255,243,208,.85)">🏪 ${esc(rule.freeShopName||'お店')}</span>
+        <span style="font-weight:800;color:#fff3d0">${Math.round(freeShopSum)}円</span>
       </div>`;
     }
   }
@@ -1382,6 +1391,7 @@ const InputForm = {
     const tobiThreshold = rule.tobiRule==='minus100' ? -100 : 0;
     const bustedMemberIds = (rule.tobiAri && rule.tobiPenalty) ? entries.filter(e=>e.rawScore<=tobiThreshold).map(e=>e.memberId) : [];
     const tobashiTargetId = bustedMemberIds.length ? UI.formTobashiTarget : null;
+    const freeShopTotal = rule.freeEnabled ? (entries.length * (rule.freeGameFee||0) + (rule.freeTopPrize||0)) : 0;
     let sessionRef;
     if(UI.editingHistoryId){
       const s=DB.history.find(x=>x.id===UI.editingHistoryId);
@@ -1389,10 +1399,10 @@ const InputForm = {
       if(s.chipDeltas){
         Object.entries(s.chipDeltas).forEach(([mid,delta])=>{ if(delta) ChipTracker.addToFinalValue(mid, -delta, s.date); });
       }
-      s.ruleId=rule.id; s.players=players; s.babaTotal=computed.babaTotal; s.bustedMemberIds=bustedMemberIds; s.tobashiTargetId=tobashiTargetId;
+      s.ruleId=rule.id; s.players=players; s.babaTotal=computed.babaTotal; s.freeShopTotal=freeShopTotal; s.bustedMemberIds=bustedMemberIds; s.tobashiTargetId=tobashiTargetId;
       sessionRef = s;
     } else {
-      sessionRef = { id:uid(), globalId:uid(), date:todayStr(), ruleId:rule.id, players, babaTotal:computed.babaTotal, bustedMemberIds, tobashiTargetId };
+      sessionRef = { id:uid(), globalId:uid(), date:todayStr(), ruleId:rule.id, players, babaTotal:computed.babaTotal, freeShopTotal, bustedMemberIds, tobashiTargetId };
       DB.history.push(sessionRef);
     }
     if(!sessionRef.globalId) sessionRef.globalId = computeSessionFingerprint(sessionRef);
@@ -2356,14 +2366,14 @@ const CATEGORY_INFO = {
     border:'rgba(235,195,90,.6)', text:'#fdf0cf', sub:'rgba(253,240,207,.72)'
   }
 };
-function categoryHeaderCardHtml(key){
+function categoryHeaderCardHtml(key, periodLabel){
   const c = CATEGORY_INFO[key];
   return `<div class="rating-card" style="background:${c.grad};border:1.5px solid ${c.border};padding:16px 18px;margin-bottom:14px;text-align:center">
     <div class="rating-card-icon" style="font-size:88px;right:-14px;bottom:-18px">${c.icon}</div>
     <div class="rating-card-shine"></div>
     <div style="position:relative;z-index:1">
       <div style="font-size:32px;line-height:1">${c.icon}</div>
-      <div style="font-size:22px;font-weight:800;color:${c.text};margin-top:5px;text-shadow:0 2px 6px rgba(0,0,0,.5)">${c.title}</div>
+      <div style="font-size:22px;font-weight:800;color:${c.text};margin-top:5px;text-shadow:0 2px 6px rgba(0,0,0,.5)">${c.title}${periodLabel?`<span style="font-size:14px;font-weight:700;opacity:.85">（${periodLabel}）</span>`:''}</div>
       <div style="font-size:12px;color:${c.sub};margin-top:5px;line-height:1.5">${c.desc}</div>
       <div style="font-size:11px;color:${c.sub};margin-top:2px;line-height:1.5">${c.sub2}</div>
     </div>
@@ -3621,7 +3631,7 @@ function renderRanking(){
 
   html += `<div class="card"><h3 style="margin-bottom:10px">🏆 ランキング</h3>`;
   UI.rankingPlayerCount = UI.rankingPlayerCount || 3;
-  UI.rankingScope = UI.rankingScope || 'all';
+  UI.rankingScope = UI.rankingScope || 'month';
   UI.rankingCategory = UI.rankingCategory || 'rating';
   UI.rankingMonth = UI.rankingMonth || todayStr().slice(0,7);
   html += `<div class="mode-switch">
@@ -3634,6 +3644,7 @@ function renderRanking(){
     <div class="ms-opt ${UI.rankingScope==='month'?'active':''}" onclick="Ranking.setScope('month')">月間ランキング</div>
   </div>
   ${UI.rankingScope==='month'?`<input type="month" value="${UI.rankingMonth}" style="margin-top:8px" onchange="Ranking.setMonth(this.value)">`:''}
+  <button class="btn sm secondary block" style="margin-top:8px" onclick="Ranking.showMonthlyArchive()">📅 月間ベスト3アーカイブを見る</button>
   ` : ''}
   <div class="row wrap" style="gap:6px;margin-top:10px">
     ${[['rating','最高神ゼウス'],['score','戦神アレス'],['chip','冥王ハデス'],['lastavoid','不死鳥フェニックス'],['money','富豪神プルトス']].map(([key,label])=>
@@ -3666,7 +3677,10 @@ function renderRanking(){
     valueFormat = v=>sign(Math.round(v))+'P'; valueLabel='';
   }
 
-  html += categoryHeaderCardHtml(UI.rankingCategory);
+  const periodLabel = UI.rankingCategory==='rating'
+    ? '全データ'
+    : (UI.rankingScope==='month' ? (parseInt(UI.rankingMonth.slice(5,7),10)+'月分') : '総合');
+  html += categoryHeaderCardHtml(UI.rankingCategory, periodLabel);
   if(displayRows.length===0){
     html += `<div class="card"><div class="small-note">まだデータがありません。</div></div>`;
   } else {
@@ -3835,6 +3849,45 @@ const Ranking = {
   setMonth(month){ UI.rankingMonth=month; render(); },
   setCategory(cat){ UI.rankingCategory=cat; UI.rankingExpandedName=null; if(cat==='rating') UI.rankingScope='all'; render(); },
   toggleExpand(name){ UI.rankingExpandedName = (UI.rankingExpandedName===name) ? null : name; render(); },
+  showMonthlyArchive(){
+    const cat = UI.rankingCategory;
+    if(cat==='rating') return; // レーティングは全データのみのため月間アーカイブの対象外
+    const pc = UI.rankingPlayerCount;
+    const isSettlementBased = (cat==='chip' || cat==='money');
+    const dataSource = isSettlementBased ? (UI.rankingSettlementData||[]) : (UI.rankingData||[]);
+    const computeFn = cat==='score' ? computeScoreRanking : cat==='chip' ? computeChipRanking : cat==='money' ? computeMoneyRanking : computeLastAvoidRanking;
+    const valueFormat = cat==='score' ? (v=>sign(Math.round(v*10)/10)) :
+                         cat==='chip' ? (v=>sign(v)+'枚') :
+                         cat==='money' ? (v=>sign(Math.round(v))+'P') :
+                         (v=>v.toFixed(0)+'%');
+    const months = new Set();
+    dataSource.forEach(item=>{ if(item.playerCount===pc && item.date) months.add(item.date.slice(0,7)); });
+    const sortedMonths = Array.from(months).sort().reverse();
+    const c = CATEGORY_INFO[cat];
+    const rows = sortedMonths.length ? sortedMonths.map(month=>{
+      const top3 = computeFn(dataSource, pc, UI.rankingAliasMap, month).slice(0,3);
+      const monthLabel = parseInt(month.slice(5,7),10)+'月分';
+      return `<div style="border:1px solid var(--border);border-radius:10px;padding:10px 12px;margin-bottom:8px">
+        <div style="font-weight:800;font-size:13px;margin-bottom:6px">${esc(monthLabel)}（${month}）</div>
+        ${top3.length ? top3.map((r,idx)=>`<div class="row" style="justify-content:space-between;align-items:center;padding:3px 0">
+          <span style="font-size:12.5px">${['🥇','🥈','🥉'][idx]} ${esc(r.name)}</span>
+          <span style="font-size:12.5px;font-weight:700">${valueFormat(r.value)}</span>
+        </div>`).join('') : '<div class="small-note">データなし</div>'}
+      </div>`;
+    }).join('') : '<div class="small-note">まだ月別のデータがありません。</div>';
+    document.getElementById('modalRoot').innerHTML = `
+      <div class="modal-overlay" onclick="if(event.target===this) closeInfoModal()">
+        <div class="modal" style="max-width:560px;max-height:85vh;overflow-y:auto">
+          <div class="row" style="justify-content:space-between;align-items:center;margin-bottom:6px">
+            <h3 style="margin-bottom:0">📅 ${esc(c.title)}：月間ベスト3アーカイブ</h3>
+            <button class="close-x" onclick="closeInfoModal()">✕</button>
+          </div>
+          <div class="small-note" style="margin-bottom:10px">${pc}人打ちの月ごとのベスト3です。過去の月のランキングも振り返れます。</div>
+          ${rows}
+          <button class="btn block" style="margin-top:4px" onclick="closeInfoModal()">閉じる</button>
+        </div>
+      </div>`;
+  },
   reload(){ UI.rankingData=null; UI.rankingSettlementData=null; UI.rankingError=null; render(); },
   updateAliasForm(key,val){
     UI.adminAliasForm = UI.adminAliasForm || { from:'', to:'' };
@@ -4931,6 +4984,8 @@ const Settings = {
     d.oka=numOrZero(d.oka);
     d.babaFromRank=numOrZero(d.babaFromRank)||2;
     d.babaAmount=numOrZero(d.babaAmount);
+    d.freeGameFee=numOrZero(d.freeGameFee);
+    d.freeTopPrize=numOrZero(d.freeTopPrize);
     d.tobiPenalty=numOrZero(d.tobiPenalty);
     d.akaDoraMan=numOrZero(d.akaDoraMan);
     d.akaDoraPin=numOrZero(d.akaDoraPin);
@@ -5252,6 +5307,8 @@ function renderRuleModal(){
       <div class="section-title">進行ルール</div>
       <div class="field-wrap"><label class="field">連チャン方式</label>
         <select onchange="Settings.updateDraft('renchanType', this.value)">
+          <option value="agari" ${d.renchanType==='agari'?'selected':''}>あがり連チャン（親が和了した時のみ連荘）</option>
+          <option value="sentaku" ${d.renchanType==='sentaku'?'selected':''}>選択制連チャン（連荘するかどうかを親が選べる）</option>
           <option value="tenpai_keishiki" ${d.renchanType==='tenpai_keishiki'?'selected':''}>聴牌連（テンパイ連）（形式聴牌あり）</option>
           <option value="tenpai_yaku" ${d.renchanType==='tenpai_yaku'?'selected':''}>聴牌連（テンパイ連）（役あり聴牌のみ）</option>
           <option value="nagare" ${d.renchanType==='nagare'?'selected':''}>流局連（流局なら形に関係なく連荘）</option>
@@ -5314,6 +5371,22 @@ function renderRuleModal(){
             </div>
           </div>
           <div class="hint">例：2着のみ・5に設定すると、2着の人からだけ5点（レートが1000点=100Pなら500P相当）差し引き、場代として集計します（3着・4着は対象外）。</div>
+        </div>`)}
+      ${toggleRow('フリー（フリー雀荘）','半荘ごとにゲーム代を全員から徴収し、トップの人がゲーム代とトップ賞をまとめて店に支払う', d.freeEnabled, "Settings.toggleDraft('freeEnabled')",
+        `<div class="field-wrap">
+          <div class="row">
+            <div class="grow"><label class="field">ゲーム代（1人あたり・円）</label>
+              <input type="number" step="1" value="${d.freeGameFee}" ${d.freeEnabled?'':'disabled'} oninput="Settings.updateDraft('freeGameFee', numOrZero(this.value))">
+            </div>
+            <div class="grow"><label class="field">トップ賞（円）</label>
+              <input type="number" step="1" value="${d.freeTopPrize}" ${d.freeEnabled?'':'disabled'} oninput="Settings.updateDraft('freeTopPrize', numOrZero(this.value))">
+            </div>
+          </div>
+          <div class="field-wrap">
+            <label class="field">店の名前</label>
+            <input type="text" value="${esc(d.freeShopName||'')}" ${d.freeEnabled?'':'disabled'} oninput="Settings.updateDraft('freeShopName', this.value)">
+          </div>
+          <div class="hint">半荘ごとに、全員からゲーム代を徴収してトップの人に渡し、トップの人はそのゲーム代の合計にトップ賞を上乗せして店に支払う、という流れを再現します。店への支払い合計は「本日のトータルスコア」に店名で表示され、参加者の素点・順位点には影響しません。</div>
         </div>`)}
 
       <div class="section-title">点数計算</div>
@@ -5566,11 +5639,12 @@ function renderRuleDetailModal(){
     ['対局形式', r.gameType==='hanchan'?'半荘戦':'東風戦'],
     ['開始点/返し点', r.startPoints+' / '+r.returnPoints],
     ['点棒', '500点棒:'+YN(r.stick500Enabled)+' / 100点棒:'+YN(r.stick100Enabled)],
-    ['連チャン方式', {tenpai_keishiki:'聴牌連（形式聴牌あり）',tenpai_yaku:'聴牌連（役あり聴牌のみ）',nagare:'流局連',none:'連荘なし'}[r.renchanType]],
+    ['連チャン方式', {agari:'あがり連チャン',sentaku:'選択制連チャン',tenpai_keishiki:'聴牌連（形式聴牌あり）',tenpai_yaku:'聴牌連（役あり聴牌のみ）',nagare:'流局連',none:'連荘なし'}[r.renchanType]],
     ['縛り', {none:'縛りなし',deai:'出上がり2飜（偶然2飜）',kanzen:'完全2飜（確定2飜）',other:'その他('+r.shibariHan+'飜)'}[r.shibariType]],
     ['ウマ', r.uma.join(' / ')],
     ['オカ（追加ボーナス）', r.okaEnabled ? r.oka : 'なし'],
     ['場代', r.babaEnabled ? (r.babaFromRank+'着のみ1人'+r.babaAmount+'点') : 'なし'],
+    ['フリー（ゲーム代・トップ賞）', r.freeEnabled ? (esc(r.freeShopName||'お店')+'／ゲーム代'+r.freeGameFee+'円／トップ賞'+r.freeTopPrize+'円') : 'なし'],
     ['符計算/ツモ損', YN(r.fuCalculation)+' / '+YN(r.tsumoLoss)],
     ['同点の際のルール', r.tiebreakRule==='atamahane' ? '頭ハネ（着順を決める）' : '折半（同着扱い）'],
     ['喰いタン/後付け/ツモピン', YN(r.kuitanAri)+' / '+YN(r.atozukeAri)+' / '+YN(r.tsumoPinAri)],
