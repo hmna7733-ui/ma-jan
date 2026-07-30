@@ -755,6 +755,43 @@ function addFreeShopSlot(shopName, slotType){
   persist('members');
   return newMember;
 }
+/* 精算表から「このお客さん1は実は◯◯さんだった」と特定した時のための分離処理。
+   店の枠メンバー（お客さん1など）自体は一切変更せず、新しく「特定済みメンバー」を作って、
+   この精算表とそれに紐づく対局だけを新しいメンバーに差し替える。
+   他の過去・未来の精算表にある同じ枠メンバーは、そのままの名前で残る（同一人物とは限らないため）。
+   新しいメンバーはそのお店専用の「特定済みメンバー」として、以後の本日の対局でも選べるようになる。 */
+function splitSettlementMember(settlementId, oldMemberId, newName){
+  const st = DB.settlements.find(s=>s.id===settlementId);
+  if(!st) return null;
+  const oldMember = getMember(oldMemberId);
+  if(!oldMember) return null;
+  const newMember = ensureMemberDefaults({
+    id:uid(), name:newName, color:oldMember.color,
+    isSelf:false, excludedRuleIds:[], aliases:[],
+    freeShopName:oldMember.freeShopName, freeSlotType:null, freeSlotIndex:null
+  });
+  DB.members.push(newMember);
+  st.memberIds = st.memberIds.map(mid=>mid===oldMemberId?newMember.id:mid);
+  if(st.perMember && st.perMember[oldMemberId]!==undefined){
+    st.perMember[newMember.id] = st.perMember[oldMemberId];
+    delete st.perMember[oldMemberId];
+  }
+  const sessions = DB.history.filter(h=>st.sessionIds && st.sessionIds.includes(h.id));
+  sessions.forEach(h=>{
+    h.players.forEach(p=>{ if(p.memberId===oldMemberId) p.memberId=newMember.id; });
+    if(h.tobashiTargetId===oldMemberId) h.tobashiTargetId=newMember.id;
+    if(h.bustedMemberIds) h.bustedMemberIds = h.bustedMemberIds.map(id=>id===oldMemberId?newMember.id:id);
+    if(h.sideBet && h.sideBet.participantIds){
+      h.sideBet.participantIds = h.sideBet.participantIds.map(id=>id===oldMemberId?newMember.id:id);
+      if(h.sideBet.results && h.sideBet.results[oldMemberId]!==undefined){
+        h.sideBet.results[newMember.id] = h.sideBet.results[oldMemberId];
+        delete h.sideBet.results[oldMemberId];
+      }
+    }
+  });
+  persist('members'); persist('settlements'); persist('history');
+  return newMember;
+}
 
 let DB = { rules:[], members:[], history:[], chipTx:[], groups:[], settlements:[] };
 try{
@@ -1149,6 +1186,7 @@ function renderHome(){
   if(isFree){
     const shopName = rule.freeShopName || 'お店';
     const selfMembers = DB.members.filter(m=>m.isSelf && !m.freeShopName);
+    const identifiedMembers = DB.members.filter(m=>m.freeShopName===shopName && !m.freeSlotType && !m.isSelf);
     const staffSlots = getOrCreateFreeShopSlots(shopName, 'staff');
     const customerSlots = getOrCreateFreeShopSlots(shopName, 'customer');
     const renderSlotChip = (m, renamable)=>{
@@ -1156,12 +1194,16 @@ function renderHome(){
       const disabled = !selected && UI.home.memberIds.length>=rule.playerCount;
       return `<div class="chip ${selected?'selected':''} ${disabled?'disabled':''}" style="display:inline-flex;align-items:center;gap:4px">
         <span onclick="${disabled?'':`Home.toggleMember('${m.id}')`}" style="display:flex;align-items:center;gap:4px"><span class="dot" style="background:${selected?'#fff':m.color}"></span>${esc(m.name)}</span>
-        ${renamable?`<span onclick="event.stopPropagation();Home.renameFreeMember('${m.id}')" style="opacity:.7;padding-left:2px">✏️</span>`:''}
       </div>`;
     };
-    html += `<div class="small-note" style="margin-bottom:6px">🎰「${esc(shopName)}」専用のメンバーです。仲良くなったら✏️で名前を編集できます（このお店の対局にだけ使われ、セットのメンバーには表示されません）。</div>`;
-    if(selfMembers.length){
-      html += `<div class="row wrap" style="gap:6px;margin-bottom:8px">${selfMembers.map(m=>renderSlotChip(m,false)).join('')}</div>`;
+    html += `<div class="small-note" style="margin-bottom:6px">🎰「${esc(shopName)}」専用のメンバーです（このお店の対局にだけ使われ、セットのメンバーには表示されません）。</div>`;
+    html += `<div class="row" style="justify-content:space-between;align-items:center;margin-bottom:8px;gap:8px">
+      <div class="row wrap" style="gap:6px">${selfMembers.map(m=>renderSlotChip(m,false)).join('')}</div>
+      <button class="btn sm secondary" style="flex-shrink:0" onclick="Home.goToShopMembers('${esc(shopName).replace(/'/g,"&#39;")}')">メンバーの名前を変更</button>
+    </div>`;
+    if(identifiedMembers.length){
+      html += `<div class="small-note" style="margin:4px 0 4px">顔なじみ</div>
+      <div class="row wrap" style="gap:6px;margin-bottom:8px">${identifiedMembers.map(m=>renderSlotChip(m,false)).join('')}</div>`;
     }
     html += `<div class="row wrap" style="gap:6px">${staffSlots.map(m=>renderSlotChip(m,true)).join('')}
       <div class="chip" style="background:var(--card2);border:1px dashed var(--border)" onclick="Home.addFreeSlot('${esc(shopName).replace(/'/g,"&#39;")}','staff')">＋メンバー追加</div>
@@ -1343,27 +1385,14 @@ function sessionCardHtml(s, readOnly){
 
 const Home = {
   setRule(id){ UI.home.ruleId=id||null; UI.home.memberIds=[]; localStorage.setItem('mj_collapse_homeSettings', '0'); render(); },
-  renameFreeMember(memberId){
-    const m = getMember(memberId);
-    if(!m) return;
-    UI.renameFreeMemberId = memberId;
-    UI.renameFreeMemberDraft = m.name;
-    renderRenameFreeMemberModal();
-  },
   addFreeSlot(shopName, slotType){
     addFreeShopSlot(shopName, slotType);
     render();
   },
-  saveFreeMemberName(){
-    const m = getMember(UI.renameFreeMemberId);
-    if(!m) return;
-    const name = (UI.renameFreeMemberDraft||'').trim();
-    if(!name){ renderInfoModal('名前が未入力です','名前を入力してください。'); return; }
-    m.name = name;
-    persist('members');
-    UI.renameFreeMemberId = null;
-    document.getElementById('modalRoot').innerHTML='';
-    render();
+  goToShopMembers(shopName){
+    UI.settingsSub = 'members';
+    localStorage.setItem('mj_collapse_freeShopMembers_'+shopName, '0');
+    Router.go('settings');
   },
   toggleMember(id){
     const i=UI.home.memberIds.indexOf(id);
@@ -1966,7 +1995,6 @@ function settlementCardHtml(st){
       <div class="row" style="align-items:center;gap:8px;margin-bottom:8px">
         ${avatarHtml(mid,26)}
         <span style="font-size:17px;font-weight:700;color:#fff;cursor:pointer" onclick="Settlement.showMemberBreakdown('${st.id}','${mid}')">${esc(memberName(mid))}</span>
-        ${isFree?`<span onclick="event.stopPropagation();Home.renameFreeMember('${mid}')" style="opacity:.75;cursor:pointer">✏️</span>`:''}
       </div>
       <div class="row" style="justify-content:space-between;align-items:center">
         <div style="font-size:13px;color:rgba(255,255,255,.7);line-height:1.7">
@@ -1998,7 +2026,7 @@ function settlementCardHtml(st){
     <div class="rating-card-icon" style="font-size:70px">💎</div>
     <div class="rating-card-shine"></div>
     <div style="position:relative;z-index:1">
-      <div style="font-size:12px;color:rgba(255,255,255,.7);margin-bottom:8px">${fmtDate(st.date)} ・ ${esc(rule?rule.name:'(ルール削除済)')} ・ ${memberList}</div>
+      <div style="font-size:12px;color:rgba(255,255,255,.7);margin-bottom:8px${isFree?';padding-right:64px':''}">${fmtDate(st.date)} ・ ${esc(rule?rule.name:'(ルール削除済)')} ・ ${memberList}</div>
       <div class="row wrap" style="gap:10px;margin-bottom:8px;align-items:center">
         ${editingRate ? `
           ${rateEnabled?`<span style="font-size:12px;color:rgba(255,255,255,.75)">レート: <input type="number" step="10" value="${rateUsed}" style="width:70px;display:inline-block" onchange="Settlement.updateRate('${st.id}', this.value)">P/1000点</span>`:''}
@@ -2014,6 +2042,7 @@ function settlementCardHtml(st){
       <div style="display:flex;flex-direction:column;gap:10px;margin-top:12px">
         <button class="btn sm secondary" onclick="Settlement.toggleExpand('${st.id}')">${expanded?'対局履歴を閉じる':'対局履歴を見る（'+sessions.length+'件）'}</button>
         ${canEdit?`<button class="btn sm secondary" onclick="Settlement.unlock('${st.id}')">対局を編集</button>`:''}
+        ${isFree?`<button class="btn sm secondary" onclick="Settlement.openRenameMember('${st.id}')">メンバーの名前を変更</button>`:''}
       </div>
       <div style="display:flex;gap:16px;margin-top:28px">
         <button class="btn sm secondary" onclick="Settlement.share('${st.id}')">🔗 送る</button>
@@ -2420,6 +2449,38 @@ const Settlement = {
       }
     }catch(e){ console.error(e); renderInfoModal('受け取りに失敗しました', firestoreErrorMessage(e, 'mahjong_shared_settlements')); }
   },
+  openRenameMember(settlementId){
+    const st = DB.settlements.find(x=>x.id===settlementId);
+    if(!st) return;
+    UI.renameSettlementId = settlementId;
+    UI.renameSettlementDraft = {};
+    st.memberIds.forEach(mid=>{
+      const m = getMember(mid);
+      if(m && m.freeShopName){ UI.renameSettlementDraft[mid] = m.name; }
+    });
+    renderSettlementRenameModal();
+  },
+  updateRenameSettlementDraft(mid, val){ UI.renameSettlementDraft[mid]=val; },
+  saveSettlementRename(){
+    const st = DB.settlements.find(x=>x.id===UI.renameSettlementId);
+    if(!st) return;
+    let changedCount = 0;
+    Object.entries(UI.renameSettlementDraft).forEach(([mid,newName])=>{
+      const m = getMember(mid);
+      const trimmed = (newName||'').trim();
+      if(m && trimmed && trimmed!==m.name){
+        splitSettlementMember(UI.renameSettlementId, mid, trimmed);
+        changedCount++;
+      }
+    });
+    UI.renameSettlementId = null;
+    document.getElementById('modalRoot').innerHTML='';
+    render();
+    if(changedCount){
+      renderInfoModal('名前を反映しました', 'この精算表（と対応する対局）だけに新しい名前を反映しました。同じ枠の他の精算表は、そのままの名前で残ります（同一人物とは限らないため）。以後の「本日の対局」では、この名前のメンバーを直接選べます。');
+    }
+  },
+  closeRenameSettlement(){ UI.renameSettlementId=null; document.getElementById('modalRoot').innerHTML=''; },
   showMemberBreakdown(settlementId, memberId){
     const st = DB.settlements.find(x=>x.id===settlementId);
     if(!st) return;
@@ -5183,6 +5244,7 @@ function renderSettings(){
           const collapsed = isSectionCollapsed(key);
           const staff = DB.members.filter(m=>m.freeShopName===shopName && m.freeSlotType==='staff').sort((a,b)=>(a.freeSlotIndex||0)-(b.freeSlotIndex||0));
           const customers = DB.members.filter(m=>m.freeShopName===shopName && m.freeSlotType==='customer').sort((a,b)=>(a.freeSlotIndex||0)-(b.freeSlotIndex||0));
+          const identified = DB.members.filter(m=>m.freeShopName===shopName && !m.freeSlotType && !m.isSelf);
           html+=`<div class="card">
             <div class="row" style="justify-content:space-between;align-items:center;cursor:pointer" onclick="toggleSectionCollapse('${key}')">
               <h3 style="margin-bottom:0">🎰 ${esc(shopName)}のメンバー</h3>
@@ -5196,7 +5258,8 @@ function renderSettings(){
                 <button class="btn sm danger" onclick="Settings.removeMember('${m.id}')">削除</button>
               </div>
             </div>`;
-            html+=`<div class="small-note" style="margin:8px 0 4px">メンバーさん</div>${staff.map(renderRow).join('')}
+            html+=`${identified.length?`<div class="small-note" style="margin:8px 0 4px">顔なじみ（特定済み）</div>${identified.map(renderRow).join('')}`:''}
+            <div class="small-note" style="margin:8px 0 4px">メンバーさん</div>${staff.map(renderRow).join('')}
             <div class="small-note" style="margin:8px 0 4px">お客さん</div>${customers.map(renderRow).join('')}
             <div class="small-note" style="margin-top:6px">※このお店のメンバーは、フリー用のルールにだけ表示され、セットのメンバー選択には表示されません。</div>`;
           }
@@ -6108,18 +6171,23 @@ function renderInfoModal(title, message, buttonLabel){
 function closeInfoModal(){ document.getElementById('modalRoot').innerHTML=''; }
 
 /* フリー雀荘のメンバーさん・お客さんの名前をその場で編集するモーダル */
-function renderRenameFreeMemberModal(){
-  const m = getMember(UI.renameFreeMemberId);
-  if(!m) return;
+function renderSettlementRenameModal(){
+  const st = DB.settlements.find(x=>x.id===UI.renameSettlementId);
+  if(!st || !UI.renameSettlementDraft) return;
+  const entries = Object.keys(UI.renameSettlementDraft);
   document.getElementById('modalRoot').innerHTML = `
-    <div class="modal-overlay" onclick="if(event.target===this) closeInfoModal()">
+    <div class="modal-overlay" onclick="if(event.target===this) Settlement.closeRenameSettlement()">
       <div class="modal">
-        <div class="modal-head"><h2>名前を編集</h2><button class="close-x" onclick="closeInfoModal()">✕</button></div>
-        <div class="small-note" style="margin-bottom:8px">「${esc(m.freeSlotType==='staff'?'メンバー':'お客さん')}」の枠の名前です。仲良くなったら実際の名前に変えてあげてください。</div>
-        <input type="text" value="${esc(UI.renameFreeMemberDraft||'')}" oninput="UI.renameFreeMemberDraft=this.value">
-        <div class="row" style="gap:8px;margin-top:14px">
-          <button class="btn secondary grow" onclick="closeInfoModal()">キャンセル</button>
-          <button class="btn grow" onclick="Home.saveFreeMemberName()">保存</button>
+        <div class="modal-head"><h2>メンバーの名前を変更</h2><button class="close-x" onclick="Settlement.closeRenameSettlement()">✕</button></div>
+        <div class="small-note" style="margin-bottom:12px">ここで変更すると、<b>この精算表（と対応する対局）だけ</b>に新しい名前が反映されます。同じ枠（お客さん1など）を使った他の精算表は、同一人物とは限らないためそのまま残ります。</div>
+        ${entries.map(mid=>{
+          const m = getMember(mid);
+          return `<div class="field-wrap"><label class="field">${esc(m?m.name:'')}</label>
+            <input type="text" value="${esc(UI.renameSettlementDraft[mid]||'')}" oninput="Settlement.updateRenameSettlementDraft('${mid}', this.value)"></div>`;
+        }).join('')}
+        <div class="row" style="gap:8px;margin-top:8px">
+          <button class="btn secondary grow" onclick="Settlement.closeRenameSettlement()">キャンセル</button>
+          <button class="btn grow" onclick="Settlement.saveSettlementRename()">保存</button>
         </div>
       </div>
     </div>`;
