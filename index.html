@@ -909,6 +909,60 @@ function computeFreeAdjustedSession(session, rule){
   const shopTotal = session.players.length*gameFee + topPrize;
   return { perMember, shopTotal, gameFee, topPrize };
 }
+/* 個別勝負（馬身 or 着順勝負）の結果を計算する。
+   sideBet: { type:'umami'|'chakujun', amount, participantIds }
+   players: セッションのplayers配列（memberId, rankを含む）
+   戻り値: { memberId: 増減P, ... }（個別勝負の参加者のみ。ゼロサムになる） */
+/* 個別勝負のうち、2人（memberId視点でoidとの間）だけのやり取りを計算する。
+   馬身：着順差×金額（着順が上のプレイヤーが受け取る）。着順勝負：どちらかが参加者内で1位なら、そちらが相手から金額を受け取る。 */
+function computeSideBetPairwise(sideBet, players, memberId, oid){
+  if(!sideBet || !sideBet.participantIds || !sideBet.participantIds.includes(memberId) || !sideBet.participantIds.includes(oid)) return 0;
+  const amount = sideBet.amount||0;
+  const meP = players.find(p=>p.memberId===memberId);
+  const opP = players.find(p=>p.memberId===oid);
+  if(!meP || !opP) return 0;
+  if(sideBet.type==='chakujun'){
+    const partRanks = {};
+    players.forEach(p=>{ if(sideBet.participantIds.includes(p.memberId)) partRanks[p.memberId]=p.rank; });
+    const ids = Object.keys(partRanks);
+    const bestId = ids.reduce((best,id)=> partRanks[id]<partRanks[best] ? id : best, ids[0]);
+    if(memberId===bestId) return amount; // 相手から受け取る
+    if(oid===bestId) return -amount; // 相手に払う
+    return 0; // どちらも1位でなければ、この2人の間でのやり取りはない
+  }
+  if(meP.rank===opP.rank) return 0;
+  const diff = Math.abs(meP.rank-opP.rank);
+  return meP.rank<opP.rank ? diff*amount : -diff*amount;
+}
+function computeSideBetResults(sideBet, players){
+  const deltas = {};
+  if(!sideBet || !sideBet.participantIds || sideBet.participantIds.length<2) return deltas;
+  const amount = sideBet.amount||0;
+  const partRanks = {};
+  players.forEach(p=>{ if(sideBet.participantIds.includes(p.memberId)) partRanks[p.memberId]=p.rank; });
+  const ids = Object.keys(partRanks);
+  ids.forEach(id=>deltas[id]=0);
+  if(sideBet.type==='chakujun'){
+    const bestId = ids.reduce((best,id)=> partRanks[id]<partRanks[best] ? id : best, ids[0]);
+    ids.forEach(id=>{ if(id!==bestId){ deltas[id]-=amount; deltas[bestId]+=amount; } });
+  } else {
+    // 馬身：参加者同士の全ペアで、着順が下だった方が着順差×金額を上だった方に払う
+    for(let i=0;i<ids.length;i++){
+      for(let j=i+1;j<ids.length;j++){
+        const a=ids[i], b=ids[j];
+        const ra=partRanks[a], rb=partRanks[b];
+        if(ra===rb) continue;
+        const worse = ra>rb ? a : b;
+        const better = ra>rb ? b : a;
+        const diff = Math.abs(ra-rb);
+        deltas[worse] -= diff*amount;
+        deltas[better] += diff*amount;
+      }
+    }
+  }
+  return deltas;
+}
+
 function computeSession(rule, entries, options){
   options = options || {};
   const tobashiTargetId = options.tobashiTargetId || null;
@@ -1077,11 +1131,17 @@ function renderHome(){
     html += `</div></div></div>`;
     document.getElementById('app').innerHTML=html; return;
   }
+  const memberSelectionReady = UI.home.memberIds.length===rule.playerCount;
   if(rule.rateEnabled || rule.chipEnabled){
     html += `<div class="row" style="gap:14px;margin-top:10px;flex-wrap:wrap;align-items:center">
       ${rule.rateEnabled?`<span class="small-note">レート: 1000点＝${effRule.rate}P</span>`:''}
       ${rule.chipEnabled?`<span class="small-note">チップ: ${effRule.chipValue}P/枚</span>`:''}
       <button class="link-btn" onclick="Home.openRateOverride()">${hasOverride?'本日は変更中（編集）':'本日だけ変更する'}</button>
+      <button class="btn sm secondary" style="margin-left:auto" ${memberSelectionReady?'':'disabled'} onclick="Home.openSideBet()" title="${memberSelectionReady?'':'メンバーを'+rule.playerCount+'人選ぶと押せます'}">🎲 個別勝負</button>
+    </div>`;
+  } else {
+    html += `<div class="row" style="margin-top:10px;justify-content:flex-end">
+      <button class="btn sm secondary" ${memberSelectionReady?'':'disabled'} onclick="Home.openSideBet()" title="${memberSelectionReady?'':'メンバーを'+rule.playerCount+'人選ぶと押せます'}">🎲 個別勝負</button>
     </div>`;
   }
   const isFree = isFreeRule(rule);
@@ -1247,14 +1307,17 @@ function sessionCardHtml(s, readOnly){
   const r = rBase ? getEffectiveRule(rBase, s.date) : rBase;
   const isFree = isFreeRule(rBase);
   const freeAdj = isFree ? computeFreeAdjustedSession(s, rBase) : null;
+  const sideBetResults = (s.sideBet && s.sideBet.results) || null;
   const sortedP = [...s.players].sort((a,b)=>a.rank-b.rank);
   return `<div class="session-card">
     <div class="meta"><div class="d">${fmtDate(s.date)} ・ ${esc(r?r.name:'(ルール削除済)')}</div></div>
     <div class="players">
       ${sortedP.map(p=>{
         const chipDelta = s.chipDeltas ? s.chipDeltas[p.memberId] : undefined;
-        const adjText = freeAdj ? ` <span class="small-note">（ゲーム代込み: ${sign(Math.round(freeAdj.perMember[p.memberId]||0))}P）</span>` : '';
-        return `<span><span class="dot" style="width:7px;height:7px;border-radius:50%;background:${memberColor(p.memberId)};display:inline-block"></span>${p.rank}位 ${esc(memberName(p.memberId))} ${p.rawScore}点 <b class="${p.point>0?'pos':p.point<0?'neg':''}">${sign(p.point)}</b>${yenText(p.point,r)}${adjText}${chipDelta?` <span class="small-note">（チップ${sign(chipDelta)}枚）</span>`:''}</span>`;
+        const adjText = freeAdj ? ` <span class="small-note">（ゲ込み: ${sign(Math.round(freeAdj.perMember[p.memberId]||0))}P）</span>` : '';
+        const sideBetVal = sideBetResults ? sideBetResults[p.memberId] : undefined;
+        const sideBetText = sideBetVal!==undefined ? ` <span class="small-note">（個人戦${sign(Math.round(sideBetVal))}P）</span>` : '';
+        return `<span><span class="dot" style="width:7px;height:7px;border-radius:50%;background:${memberColor(p.memberId)};display:inline-block"></span>${p.rank}位 ${esc(memberName(p.memberId))} ${p.rawScore}点 <b class="${p.point>0?'pos':p.point<0?'neg':''}">${sign(p.point)}</b>${adjText}${sideBetText}${chipDelta?` <span class="small-note">（チップ${sign(chipDelta)}枚）</span>`:''}</span>`;
       }).join('')}
       ${s.babaTotal?`<span>🏮 場代 <b class="pos">${sign(s.babaTotal)}</b>${yenText(s.babaTotal,r)}</span>`:''}
       ${freeAdj?`<span>🏪 ${esc(rBase.freeShopName||'お店')} <b class="pos">+${Math.round(freeAdj.shopTotal)}P</b></span>`:''}
@@ -1328,9 +1391,75 @@ const Home = {
     document.getElementById('modalRoot').innerHTML='';
     render();
   },
-  closeRateOverride(){ document.getElementById('modalRoot').innerHTML=''; }
+  closeRateOverride(){ document.getElementById('modalRoot').innerHTML=''; },
+  openSideBet(){
+    const rule = getRule(UI.home.ruleId);
+    if(!rule || UI.home.memberIds.length!==rule.playerCount) return;
+    UI.sideBetDraft = UI.home.sideBet ? {...UI.home.sideBet, participantIds:[...UI.home.sideBet.participantIds]} : { type:'umami', amount:500, participantIds:[] };
+    renderSideBetModal();
+  },
+  setSideBetType(type){ UI.sideBetDraft.type=type; renderSideBetModal(); },
+  setSideBetAmount(v){ UI.sideBetDraft.amount=numOrZero(v); },
+  toggleSideBetParticipant(mid){
+    const i = UI.sideBetDraft.participantIds.indexOf(mid);
+    if(i>=0) UI.sideBetDraft.participantIds.splice(i,1); else UI.sideBetDraft.participantIds.push(mid);
+    renderSideBetModal();
+  },
+  saveSideBet(){
+    if(UI.sideBetDraft.participantIds.length<2){
+      renderInfoModal('参加者が足りません','個別勝負には2人以上の参加者を選んでください。');
+      return;
+    }
+    UI.home.sideBet = { type:UI.sideBetDraft.type, amount:UI.sideBetDraft.amount||0, participantIds:[...UI.sideBetDraft.participantIds] };
+    document.getElementById('modalRoot').innerHTML='';
+    render();
+  },
+  clearSideBet(){
+    UI.home.sideBet = null;
+    document.getElementById('modalRoot').innerHTML='';
+    render();
+  },
+  closeSideBet(){ document.getElementById('modalRoot').innerHTML=''; }
 };
 
+/* 個別勝負（馬身 or 着順勝負）の設定モーダル */
+function renderSideBetModal(){
+  const rule = getRule(UI.home.ruleId);
+  if(!rule || !UI.sideBetDraft) return;
+  const d = UI.sideBetDraft;
+  const html = `
+  <div class="modal-overlay" onclick="if(event.target===this) Home.closeSideBet()">
+    <div class="modal">
+      <div class="modal-head"><h2>🎲 個別勝負の設定</h2><button class="close-x" onclick="Home.closeSideBet()">✕</button></div>
+      <div class="small-note" style="margin-bottom:12px">本日、この対局のメンバーの中で個別に勝負する人を選び、着順に応じてポイントをやり取りします。対局結果の記録時に自動で反映されます。</div>
+      <div class="field-wrap"><label class="field">勝負の方式</label>
+        <div class="row">
+          <div class="chip ${d.type==='umami'?'selected':''}" onclick="Home.setSideBetType('umami')">馬身</div>
+          <div class="chip ${d.type==='chakujun'?'selected':''}" onclick="Home.setSideBetType('chakujun')">着順勝負</div>
+        </div>
+        <div class="hint">${d.type==='umami'?'参加者同士で着順が下だった人が、着順差×金額を着順が上の人に払います。':'参加者の中で一番着順が上だった人だけが、他の参加者それぞれから金額を受け取ります。'}</div>
+      </div>
+      <div class="field-wrap"><label class="field">金額（ポイント）</label>
+        <input type="number" step="100" value="${d.amount}" oninput="Home.setSideBetAmount(this.value)">
+      </div>
+      <div class="field-wrap"><label class="field">参加メンバー</label>
+        <div class="row wrap">
+          ${UI.home.memberIds.map(mid=>{
+            const m = getMember(mid);
+            const selected = d.participantIds.includes(mid);
+            return `<div class="chip ${selected?'selected':''}" onclick="Home.toggleSideBetParticipant('${mid}')"><span class="dot" style="background:${selected?'#fff':(m?m.color:'#999')}"></span>${esc(m?m.name:'')}</div>`;
+          }).join('')}
+        </div>
+        <div class="hint">今日のこの対局に参加しているメンバーの中から、個別勝負にも参加する人を選んでください（2人以上）。</div>
+      </div>
+      <div class="row" style="gap:8px;margin-top:8px">
+        ${UI.home.sideBet?`<button class="btn secondary grow" onclick="Home.clearSideBet()">個別勝負をやめる</button>`:''}
+        <button class="btn grow" onclick="Home.saveSideBet()">設定する</button>
+      </div>
+    </div>
+  </div>`;
+  document.getElementById('modalRoot').innerHTML = html;
+}
 function renderRateOverrideModal(){
   const rule = getRule(UI.home.ruleId);
   if(!rule || !UI.rateOverrideForm) return;
@@ -1538,6 +1667,9 @@ const InputForm = {
     const freeTopPrizeUsed = freeIsEnabled ? (rule.freeTopPrize||0) : 0;
     const freeRateUsed = freeIsEnabled ? (getEffectiveRule(rule, todayStr()).rate||0) : 0;
     const freeShopTotal = freeIsEnabled ? (entries.length * freeGameFeeUsed + freeTopPrizeUsed) : 0;
+    const sideBetConfig = (UI.home.sideBet && UI.home.sideBet.participantIds.length>=2 && UI.home.sideBet.participantIds.every(pid=>players.some(p=>p.memberId===pid))) ? UI.home.sideBet : null;
+    const sideBetResults = sideBetConfig ? computeSideBetResults(sideBetConfig, players) : null;
+    const sideBet = sideBetConfig ? { type:sideBetConfig.type, amount:sideBetConfig.amount, participantIds:[...sideBetConfig.participantIds], results:sideBetResults } : null;
     let sessionRef;
     if(UI.editingHistoryId){
       const s=DB.history.find(x=>x.id===UI.editingHistoryId);
@@ -1545,10 +1677,10 @@ const InputForm = {
       if(s.chipDeltas){
         Object.entries(s.chipDeltas).forEach(([mid,delta])=>{ if(delta) ChipTracker.addToFinalValue(mid, -delta, s.date); });
       }
-      s.ruleId=rule.id; s.players=players; s.babaTotal=computed.babaTotal; s.freeShopTotal=freeShopTotal; s.freeGameFeeUsed=freeGameFeeUsed; s.freeTopPrizeUsed=freeTopPrizeUsed; s.freeRateUsed=freeRateUsed; s.bustedMemberIds=bustedMemberIds; s.tobashiTargetId=tobashiTargetId;
+      s.ruleId=rule.id; s.players=players; s.babaTotal=computed.babaTotal; s.freeShopTotal=freeShopTotal; s.freeGameFeeUsed=freeGameFeeUsed; s.freeTopPrizeUsed=freeTopPrizeUsed; s.freeRateUsed=freeRateUsed; s.bustedMemberIds=bustedMemberIds; s.tobashiTargetId=tobashiTargetId; s.sideBet=sideBet;
       sessionRef = s;
     } else {
-      sessionRef = { id:uid(), globalId:uid(), date:todayStr(), ruleId:rule.id, players, babaTotal:computed.babaTotal, freeShopTotal, freeGameFeeUsed, freeTopPrizeUsed, freeRateUsed, bustedMemberIds, tobashiTargetId };
+      sessionRef = { id:uid(), globalId:uid(), date:todayStr(), ruleId:rule.id, players, babaTotal:computed.babaTotal, freeShopTotal, freeGameFeeUsed, freeTopPrizeUsed, freeRateUsed, bustedMemberIds, tobashiTargetId, sideBet };
       DB.history.push(sessionRef);
     }
     if(!sessionRef.globalId) sessionRef.globalId = computeSessionFingerprint(sessionRef);
@@ -1820,7 +1952,7 @@ function settlementCardHtml(st){
     return `<div style="padding:12px 0;border-bottom:1px solid rgba(255,255,255,.12)">
       <div class="row" style="align-items:center;gap:8px;margin-bottom:8px">
         ${avatarHtml(mid,26)}
-        <span style="font-size:17px;font-weight:700;color:#fff">${esc(memberName(mid))}</span>
+        <span style="font-size:17px;font-weight:700;color:#fff;cursor:pointer" onclick="Settlement.showMemberBreakdown('${st.id}','${mid}')">${esc(memberName(mid))}</span>
         ${isFree?`<span onclick="event.stopPropagation();Home.renameFreeMember('${mid}')" style="opacity:.75;cursor:pointer">✏️</span>`:''}
       </div>
       <div class="row" style="justify-content:space-between;align-items:center">
@@ -2056,6 +2188,15 @@ const Settlement = {
         Object.entries(adj.perMember).forEach(([mid,val])=>{ if(perMember[mid]) perMember[mid].freeAdjustedMoney += val; });
       });
     }
+    const hasSideBet = sessions.some(s=>s.sideBet && s.sideBet.results);
+    if(hasSideBet){
+      UI.home.memberIds.forEach(mid=>{ perMember[mid].sideBetTotal = 0; });
+      sessions.forEach(s=>{
+        if(s.sideBet && s.sideBet.results){
+          Object.entries(s.sideBet.results).forEach(([mid,val])=>{ if(perMember[mid]) perMember[mid].sideBetTotal += val; });
+        }
+      });
+    }
     const babaSumForSettlement = sessions.reduce((a,s)=>a+(s.babaTotal||0),0);
     const scoreCheckTotal = Object.values(perMember).reduce((a,m)=>a+m.scorePoint,0) + babaSumForSettlement;
     const chipCheckTotal = Object.values(perMember).reduce((a,m)=>a+(m.chipCount||0),0);
@@ -2071,6 +2212,7 @@ const Settlement = {
     if(isFreeSettlement){
       freeMoneyCheckTotal = Object.values(perMember).reduce((a,m)=>a+(m.freeAdjustedMoney||0),0) + freeShopSumForSettlement;
     }
+    const sideBetCheckTotal = hasSideBet ? Object.values(perMember).reduce((a,m)=>a+(m.sideBetTotal||0),0) : 0;
     const doConfirm = ()=>{
       const id = uid();
       const selfMember = DB.members.find(m=>m.isSelf);
@@ -2081,6 +2223,7 @@ const Settlement = {
         rateEnabledUsed: rule.rateEnabled, rateUsed: effRule.rate,
         chipEnabledUsed: rule.chipEnabled, chipValueUsed: effRule.chipValue,
         freeSettlementUsed: isFreeSettlement, freeShopTotal: isFreeSettlement ? freeShopSumForSettlement : undefined,
+        hasSideBet,
         creatorName: selfMember ? selfMember.name : null,
         creatorUid: currentUser ? currentUser.uid : null,
         confirmedAt:Date.now()
@@ -2102,6 +2245,7 @@ const Settlement = {
     if(rule.chipEnabled && Math.abs(chipCheckTotal)>0.01) mismatches.push(`チップ枚数の差分：${sign(chipCheckTotal)}枚`);
     if((rule.rateEnabled||rule.chipEnabled) && Math.abs(moneyCheckTotal)>1) mismatches.push(`金額の差分：${sign(Math.round(moneyCheckTotal))}P`);
     if(isFreeSettlement && Math.abs(freeMoneyCheckTotal)>1) mismatches.push(`成績とお店（${esc(rule.freeShopName||'お店')}）の金額を合わせた差分：${sign(Math.round(freeMoneyCheckTotal))}P（本来は成績とお店の合計が0になるはずです）`);
+    if(hasSideBet && Math.abs(sideBetCheckTotal)>1) mismatches.push(`個別勝負の金額の差分：${sign(Math.round(sideBetCheckTotal))}P（本来は参加者間で合計が0になるはずです）`);
     if(mismatches.length){
       renderInfoModal('⚠️ ずれが発生しています！', `本来は合計が0になるはずですが、ズレがあります。\n${mismatches.join('\n')}\n対局結果やチップの入力に誤りがないかご確認のうえ、修正してからもう一度確定してください。`, '入力に戻る');
     } else {
@@ -2261,6 +2405,40 @@ const Settlement = {
         proceedReceive();
       }
     }catch(e){ console.error(e); renderInfoModal('受け取りに失敗しました', firestoreErrorMessage(e, 'mahjong_shared_settlements')); }
+  },
+  showMemberBreakdown(settlementId, memberId){
+    const st = DB.settlements.find(x=>x.id===settlementId);
+    if(!st) return;
+    const rule = getRule(st.ruleId);
+    const pm = st.perMember[memberId] || {scorePoint:0, chipCount:0};
+    const isFree = !!st.freeSettlementUsed;
+    const rows = [];
+    if(isFree && pm.freeAdjustedMoney!==undefined){
+      rows.push(['素点の収支（ゲーム代・トップ賞込み）', sign(Math.round(pm.freeAdjustedMoney))+'P']);
+    } else if(st.rateEnabledUsed){
+      rows.push(['素点の収支', sign(Math.round(pm.scorePoint*st.rateUsed))+'P']);
+    } else {
+      rows.push(['素点', sign(Math.round(pm.scorePoint*10)/10)]);
+    }
+    if(st.chipEnabledUsed){
+      rows.push(['チップの収支', sign(pm.chipCount||0)+'枚（'+sign(Math.round((pm.chipCount||0)*st.chipValueUsed))+'P）']);
+    }
+    if(isFree && st.freeShopTotal){
+      rows.push(['店（'+(rule&&rule.freeShopName||'お店')+'）に払った合計', '（参加者全員分）'+Math.round(st.freeShopTotal)+'P']);
+    }
+    if(st.hasSideBet && pm.sideBetTotal!==undefined){
+      rows.push(['個人勝負の収支', sign(Math.round(pm.sideBetTotal))+'P']);
+    }
+    document.getElementById('modalRoot').innerHTML = `
+      <div class="modal-overlay" onclick="if(event.target===this) closeInfoModal()">
+        <div class="modal">
+          <div class="modal-head"><h2>${esc(memberName(memberId))}さんの内訳</h2><button class="close-x" onclick="closeInfoModal()">✕</button></div>
+          <table class="score-board">
+            ${rows.map(([k,v])=>`<tr><td style="width:55%;color:var(--sub)">${esc(k)}</td><td>${esc(String(v))}</td></tr>`).join('')}
+          </table>
+          <button class="btn block" style="margin-top:14px" onclick="closeInfoModal()">閉じる</button>
+        </div>
+      </div>`;
   }
 };
 
@@ -2676,7 +2854,8 @@ function computeSettlementStats(memberId, pcFilter, mode, shopName){
     const useFreeAdjusted = st.freeSettlementUsed && pm.freeAdjustedMoney!==undefined;
     const scoreYen = useFreeAdjusted ? pm.freeAdjustedMoney : (st.rateEnabledUsed ? pm.scorePoint*st.rateUsed : 0);
     const chipYen = st.chipEnabledUsed ? (pm.chipCount||0)*st.chipValueUsed : 0;
-    moneyTotal += scoreYen + chipYen;
+    const sideBetYen = pm.sideBetTotal||0;
+    moneyTotal += scoreYen + chipYen + sideBetYen;
   });
   return { chipCount, moneyTotal, settlementCount };
 }
@@ -2686,7 +2865,7 @@ function computeSettlementStats(memberId, pcFilter, mode, shopName){
 function computeHeadToHead(memberId, pcFilter, mode, shopName){
   pcFilter = pcFilter || 'all';
   const opp={};
-  const ensure=(oid)=>{ if(!opp[oid]) opp[oid]={games:0,win:0,lose:0,draw:0,scoreDiff:0,chipDiff:0,moneyDiff:0,rankCounts:[0,0,0,0],maxRank:0,tobashiFromCount:0,tobashiToCount:0,umaMi:0}; return opp[oid]; };
+  const ensure=(oid)=>{ if(!opp[oid]) opp[oid]={games:0,win:0,lose:0,draw:0,scoreDiff:0,chipDiff:0,moneyDiff:0,rankCounts:[0,0,0,0],maxRank:0,tobashiFromCount:0,tobashiToCount:0,umaMi:0,sideBetGames:0,sideBetDiff:0}; return opp[oid]; };
 
   /* スコア差：各対局ごとに「勝ち組の取り分は負け組の損失から比例配分される」と考え、
      同じ側（勝ち同士・負け同士）の差分は0、勝ち-負けの間だけ差分が生まれるようにする */
@@ -2706,6 +2885,10 @@ function computeHeadToHead(memberId, pcFilter, mode, shopName){
       o.umaMi += (p.rank - me.rank);
       o.rankCounts[me.rank-1] = (o.rankCounts[me.rank-1]||0)+1;
       o.maxRank = Math.max(o.maxRank, s.players.length);
+      if(s.sideBet && s.sideBet.participantIds && s.sideBet.participantIds.includes(memberId) && s.sideBet.participantIds.includes(p.memberId)){
+        o.sideBetGames++;
+        o.sideBetDiff += computeSideBetPairwise(s.sideBet, s.players, memberId, p.memberId);
+      }
     });
     if(s.tobashiTargetId && s.bustedMemberIds && s.bustedMemberIds.length){
       if(s.tobashiTargetId === memberId){
@@ -4528,6 +4711,7 @@ function renderAnalysis(){
                 <div class="stat-box"><div class="v">${o.tobashiFromCount}</div><div class="l">飛ばした回数</div></div>
                 <div class="stat-box"><div class="v">${o.tobashiToCount}</div><div class="l">飛ばされた回数</div></div>
                 <div class="stat-box"><div class="v ${o.umaMi>0?'pos':o.umaMi<0?'neg':''}">${sign(o.umaMi)}</div><div class="l">通算馬身数</div></div>
+                ${o.sideBetGames?`<div class="stat-box" style="background:linear-gradient(180deg,#fff3e6,#ffdfb8)"><div class="v" style="color:#b5651d">${sign(Math.round(o.sideBetDiff))}P</div><div class="l">個人勝負収支（${o.sideBetGames}戦）</div></div>`:''}
               </div>
               ${UI.showInsights && pcFilter!=='all' ? `
               <div class="section-title">✨ AI分析</div>
