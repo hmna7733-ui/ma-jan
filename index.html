@@ -495,6 +495,7 @@ function computeSettlementFingerprint(st){
 
 function pushSessionToGlobalRanking(session, rule){
   if(!fbAuth || !currentUser || !session.globalId) return;
+  if(isFreeRule(rule)) return; // フリー雀荘のデータは共有ランキングには一切送信しない（この端末のみで保持）
   const linkedSettlement = session.settlementId ? DB.settlements.find(x=>x.id===session.settlementId) : null;
   const payload = {
     date: session.date,
@@ -515,6 +516,7 @@ function pushSessionToGlobalRanking(session, rule){
 
 function pushSettlementToGlobalRanking(settlement, rule){
   if(!fbAuth || !currentUser || !settlement.globalId) return;
+  if(isFreeRule(rule)) return; // フリー雀荘のデータは共有ランキングには一切送信しない（この端末のみで保持）
   const perMemberByName = {};
   (settlement.memberIds||[]).forEach(mid=>{
     const pm = settlement.perMember[mid] || {scorePoint:0, chipCount:0};
@@ -1687,7 +1689,13 @@ function settlementCardHtml(st){
   const editingRate = UI.editingSettlementRateId===st.id;
   const sessions = DB.history.filter(h=>st.sessionIds.includes(h.id));
   const canEdit = !!currentUser && (!st.creatorUid || st.creatorUid===currentUser.uid || UI.isAdmin);
-  return `<div class="rating-card" style="background:radial-gradient(circle at 85% 100%, rgba(230,190,90,.28), transparent 55%), linear-gradient(160deg,#0e1710,#1c2b1f 55%,#0a120c);border:1.5px solid rgba(230,190,90,.4);padding:16px">
+  const isFree = isFreeRule(rule);
+  const cardBg = isFree
+    ? 'radial-gradient(circle at 85% 100%, rgba(180,120,230,.32), transparent 55%), linear-gradient(160deg,#170e24,#241a3a 55%,#0f0a1a)'
+    : 'radial-gradient(circle at 85% 100%, rgba(230,190,90,.28), transparent 55%), linear-gradient(160deg,#0e1710,#1c2b1f 55%,#0a120c)';
+  const cardBorder = isFree ? 'rgba(180,120,230,.5)' : 'rgba(230,190,90,.4)';
+  return `<div class="rating-card" style="background:${cardBg};border:1.5px solid ${cardBorder};padding:16px">
+    ${isFree?`<div style="position:absolute;top:10px;right:14px;font-size:10.5px;font-weight:700;color:#d9c2f5;background:rgba(180,120,230,.25);padding:3px 8px;border-radius:10px;z-index:2">🎰 フリー</div>`:''}
     <div class="rating-card-icon" style="font-size:70px">💎</div>
     <div class="rating-card-shine"></div>
     <div style="position:relative;z-index:1">
@@ -2134,12 +2142,16 @@ const History = {
 };
 
 /* ============ 描画: 分析 ============ */
-function gamesForMember(memberId, pcFilter){
+/* ルールがフリー（フリー雀荘）設定かどうか */
+function isFreeRule(rule){ return !!(rule && rule.freeEnabled); }
+function gamesForMember(memberId, pcFilter, mode){
   return DB.history.filter(s=>{
     if(!s.players.some(p=>p.memberId===memberId)) return false;
-    if(pcFilter==='all') return true;
     const r=getRule(s.ruleId);
-    return r && r.playerCount===pcFilter;
+    if(pcFilter!=='all' && !(r && r.playerCount===pcFilter)) return false;
+    if(mode==='set' && isFreeRule(r)) return false;
+    if(mode==='free' && !isFreeRule(r)) return false;
+    return true;
   });
 }
 
@@ -2397,9 +2409,9 @@ function ratingCardHtml(r, playerCount){
   </div>`;
 }
 
-function computeStats(memberId, pcFilter){
+function computeStats(memberId, pcFilter, mode){
   pcFilter = pcFilter || 'all';
-  const games = gamesForMember(memberId, pcFilter);
+  const games = gamesForMember(memberId, pcFilter, mode);
   const n=games.length;
   if(n===0) return null;
   let rankCount=[0,0,0,0], totalPoint=0;
@@ -2435,9 +2447,9 @@ function avgRankFromCounts(rankCounts, games){
 }
 
 /* 飛ばし回数（罰符を受け取った回数）・飛ばされた＝箱下にされた回数 */
-function computeTobashiStats(memberId, pcFilter){
+function computeTobashiStats(memberId, pcFilter, mode){
   pcFilter = pcFilter || 'all';
-  const games = gamesForMember(memberId, pcFilter);
+  const games = gamesForMember(memberId, pcFilter, mode);
   let tobashiCount=0, bustedCount=0;
   games.forEach(s=>{
     if(s.tobashiTargetId===memberId) tobashiCount++;
@@ -2475,7 +2487,7 @@ function computeSettlementSort(ruleId, startDate, endDate){
   return rows;
 }
 
-function computeSettlementStats(memberId, pcFilter){
+function computeSettlementStats(memberId, pcFilter, mode){
   pcFilter = pcFilter || 'all';
   let chipCount=0, moneyTotal=0, settlementCount=0;
   DB.settlements.forEach(st=>{
@@ -2485,6 +2497,8 @@ function computeSettlementStats(memberId, pcFilter){
       const pc = rule ? rule.playerCount : st.memberIds.length;
       if(pc!==pcFilter) return;
     }
+    if(mode==='set' && isFreeRule(rule)) return;
+    if(mode==='free' && !isFreeRule(rule)) return;
     const pm = st.perMember[memberId];
     if(!pm) return;
     settlementCount++;
@@ -2498,7 +2512,7 @@ function computeSettlementStats(memberId, pcFilter){
 
 /* 対戦相手別成績：スコア差・チップ差・金額差は「相手の合計値の符号を反転したもの」で統一
    （多人数戦のため厳密な1対1のやり取りではないが、相手にどれだけ勝ち越したかの目安として計算） */
-function computeHeadToHead(memberId, pcFilter){
+function computeHeadToHead(memberId, pcFilter, mode){
   pcFilter = pcFilter || 'all';
   const opp={};
   const ensure=(oid)=>{ if(!opp[oid]) opp[oid]={games:0,win:0,lose:0,draw:0,scoreDiff:0,chipDiff:0,moneyDiff:0,rankCounts:[0,0,0,0],maxRank:0,tobashiFromCount:0,tobashiToCount:0,umaMi:0}; return opp[oid]; };
@@ -2508,6 +2522,8 @@ function computeHeadToHead(memberId, pcFilter){
   DB.history.forEach(s=>{
     const rule=getRule(s.ruleId);
     if(pcFilter!=='all' && (!rule || rule.playerCount!==pcFilter)) return;
+    if(mode==='set' && isFreeRule(rule)) return;
+    if(mode==='free' && !isFreeRule(rule)) return;
     const me=s.players.find(p=>p.memberId===memberId);
     if(!me) return;
     s.players.forEach(p=>{
@@ -2552,6 +2568,8 @@ function computeHeadToHead(memberId, pcFilter){
       const pc = rule?rule.playerCount:st.memberIds.length;
       if(pc!==pcFilter) return;
     }
+    if(mode==='set' && isFreeRule(rule)) return;
+    if(mode==='free' && !isFreeRule(rule)) return;
     const values = st.memberIds.map(mid=>{
       const pm = st.perMember[mid] || {scorePoint:0,chipCount:0};
       const scoreYen = st.rateEnabledUsed ? pm.scorePoint*st.rateUsed : 0;
@@ -2580,6 +2598,8 @@ function computeHeadToHead(memberId, pcFilter){
     const rule=getRule(st.ruleId);
     const pc = rule?rule.playerCount:st.memberIds.length;
     if(pc!==3) return;
+    if(mode==='set' && isFreeRule(rule)) return;
+    if(mode==='free' && !isFreeRule(rule)) return;
     const values = st.memberIds.map(mid=>{
       const pm = st.perMember[mid] || {scorePoint:0,chipCount:0};
       return { mid, chipCount: pm.chipCount||0 };
@@ -2602,10 +2622,10 @@ function computeHeadToHead(memberId, pcFilter){
 }
 
 /* ルール別成績 */
-function computeRuleBreakdown(memberId, pcFilter){
+function computeRuleBreakdown(memberId, pcFilter, mode){
   pcFilter = pcFilter || 'all';
   const byRule = {};
-  gamesForMember(memberId, pcFilter).forEach(s=>{
+  gamesForMember(memberId, pcFilter, mode).forEach(s=>{
     if(!byRule[s.ruleId]) byRule[s.ruleId] = { n:0, totalPoint:0, rankSum:0, topCount:0 };
     const p = s.players.find(pp=>pp.memberId===memberId);
     const b = byRule[s.ruleId];
@@ -3141,11 +3161,11 @@ function classifyPlaystyleV2(pcFilter, metrics){
   return matched[0];
 }
 /* 判定に必要なmetricsをまとめて作るヘルパー（AI分析・メンバー一覧などから共通で使う） */
-function buildPlaystyleMetrics(memberId, pcFilter){
-  const s = computeStats(memberId, pcFilter);
+function buildPlaystyleMetrics(memberId, pcFilter, mode){
+  const s = computeStats(memberId, pcFilter, mode);
   if(!s) return null;
-  const c = computeSettlementStats(memberId, pcFilter);
-  const t = computeTobashiStats(memberId, pcFilter);
+  const c = computeSettlementStats(memberId, pcFilter, mode);
+  const t = computeTobashiStats(memberId, pcFilter, mode);
   const rating = getMemberRating(memberId, pcFilter);
   const chipPerGame = s.n ? c.chipCount/s.n : undefined;
   const rank2Rate = (s.rankCount[1]||0)/s.n*100;
@@ -3213,16 +3233,16 @@ function computeExternalAggregate(extEntries, pc){
 /* 「まず何をするべき？」用の優先度付きアクションプランを生成する。
    現在の立ち位置（グレード・弱点）から、優先度の高い課題を最大3つ選び、
    それぞれに「理由」と「習得した先の未来」を添えて返す。 */
-function generateActionPlan(memberId, pcFilter){
+function generateActionPlan(memberId, pcFilter, mode){
   if(pcFilter==='all') return [];
-  const s = computeStats(memberId, pcFilter);
+  const s = computeStats(memberId, pcFilter, mode);
   if(!s || s.n<2) return [{ title:'まずは対局数を増やす', reason:'現在のデータ量ではまだ傾向が安定しません。', future:'10半荘を超えたあたりから、自分の本当の課題が数字にはっきり表れ始めます。', priority:10 }];
-  const t = computeTobashiStats(memberId, pcFilter);
-  const c = computeSettlementStats(memberId, pcFilter);
+  const t = computeTobashiStats(memberId, pcFilter, mode);
+  const c = computeSettlementStats(memberId, pcFilter, mode);
   const member = getMember(memberId);
-  const extEntries = (member && member.externalGames && member.externalGames[pcFilter]) || [];
+  const extEntries = (mode!=='free') ? ((member && member.externalGames && member.externalGames[pcFilter]) || []) : [];
   const extAgg = computeExternalAggregate(extEntries, pcFilter);
-  const rules = computeRuleBreakdown(memberId, pcFilter);
+  const rules = computeRuleBreakdown(memberId, pcFilter, mode);
   const rulesWithEnough = rules.filter(r=>r.n>=3);
   const mainRule = rulesWithEnough.length ? [...rulesWithEnough].sort((a,b)=>b.n-a.n)[0].rule : null;
   const gradeTableKey = resolveGradeTableKey(pcFilter, mainRule);
@@ -3267,7 +3287,7 @@ function generateActionPlan(memberId, pcFilter){
         future:`持ち点が厳しくなった局面で早めに完全ベタオリへ切り替えられれば、大失点のリスクが激減し、収支のブレそのものが小さくなります。` });
     }
   }
-  const playstyleMetrics = buildPlaystyleMetrics(memberId, pcFilter);
+  const playstyleMetrics = buildPlaystyleMetrics(memberId, pcFilter, mode);
   const styleDef = playstyleMetrics ? classifyPlaystyleV2(pcFilter, playstyleMetrics) : null;
   if(styleDef && (styleDef.key==='attack' || styleDef.key==='overpush')){
     candidates.push({ priority:6, title:'勝負すべき局面の絞り込み',
@@ -3311,8 +3331,8 @@ function generateActionPlan(memberId, pcFilter){
   candidates.sort((a,b)=>b.priority-a.priority);
   return candidates.slice(0,3);
 }
-function renderActionPlanHtml(memberId, pcFilter){
-  const plan = generateActionPlan(memberId, pcFilter);
+function renderActionPlanHtml(memberId, pcFilter, mode){
+  const plan = generateActionPlan(memberId, pcFilter, mode);
   return `<div style="margin-top:12px">
     ${plan.map((p,idx)=>`<div class="rating-card" style="background:linear-gradient(160deg,#0d1a24,#16303f 55%,#0a141c);border:1.5px solid rgba(79,195,221,.45);padding:14px;margin-bottom:10px">
       <div class="rating-card-icon" style="font-size:56px">${idx===0?'🥇':idx===1?'🥈':'🥉'}</div>
@@ -3327,11 +3347,11 @@ function renderActionPlanHtml(memberId, pcFilter){
   </div>`;
 }
 
-function generateOpponentInsight(memberId, oid, pcFilter){
+function generateOpponentInsight(memberId, oid, pcFilter, mode){
   const notes = [];
   const push = (type, text)=>notes.push({type, text});
   if(pcFilter==='all') return notes;
-  const opp = computeHeadToHead(memberId, pcFilter);
+  const opp = computeHeadToHead(memberId, pcFilter, mode);
   const o = opp[oid];
   if(!o || o.games<3){
     push('neutral', `対局数がまだ${o?o.games:0}戦と少ないため、傾向の分析はもう少しデータが増えてからの方が確実です。`);
@@ -3353,8 +3373,8 @@ function generateOpponentInsight(memberId, oid, pcFilter){
   }
 
   // タイプ比較（新しい7分類システムで判定）
-  const myMetrics = buildPlaystyleMetrics(memberId, pcFilter);
-  const oppMetrics = buildPlaystyleMetrics(oid, pcFilter);
+  const myMetrics = buildPlaystyleMetrics(memberId, pcFilter, mode);
+  const oppMetrics = buildPlaystyleMetrics(oid, pcFilter, mode);
   const myStyleDef = myMetrics ? classifyPlaystyleV2(pcFilter, myMetrics) : null;
   const oppStyleDef = oppMetrics ? classifyPlaystyleV2(pcFilter, oppMetrics) : null;
   if(myStyleDef && oppStyleDef && myStyleDef.key!=='insufficient' && oppStyleDef.key!=='insufficient'){
@@ -3374,19 +3394,19 @@ function generateOpponentInsight(memberId, oid, pcFilter){
   return notes;
 }
 
-function generateInsights(memberId, pcFilter){
-  const s = computeStats(memberId, pcFilter);
+function generateInsights(memberId, pcFilter, mode){
+  const s = computeStats(memberId, pcFilter, mode);
   if(!s || s.n<2) return { composite:null, notes:[{type:'neutral', text:'対局数がもう少し増えると、傾向が見えてきます（目安は10半荘以上）。'}] };
   const notes=[];
   const push = (type, text)=>notes.push({type, text});
-  const t = computeTobashiStats(memberId, pcFilter);
-  const c = computeSettlementStats(memberId, pcFilter);
-  const rules = pcFilter!=='all' ? computeRuleBreakdown(memberId, pcFilter) : [];
+  const t = computeTobashiStats(memberId, pcFilter, mode);
+  const c = computeSettlementStats(memberId, pcFilter, mode);
+  const rules = pcFilter!=='all' ? computeRuleBreakdown(memberId, pcFilter, mode) : [];
   const rulesWithEnough = rules.filter(r=>r.n>=3);
   const mainRule = rulesWithEnough.length ? [...rulesWithEnough].sort((a,b)=>b.n-a.n)[0].rule : null;
   const gradeTableKey = pcFilter!=='all' ? resolveGradeTableKey(pcFilter, mainRule) : pcFilter;
   const member = getMember(memberId);
-  const extEntries = (pcFilter!=='all' && member && member.externalGames && member.externalGames[pcFilter]) || [];
+  const extEntries = (pcFilter!=='all' && mode!=='free' && member && member.externalGames && member.externalGames[pcFilter]) || [];
   const extAgg = pcFilter!=='all' ? computeExternalAggregate(extEntries, pcFilter) : null;
 
   let composite = null;
@@ -3444,7 +3464,7 @@ function generateInsights(memberId, pcFilter){
     stageResult = { label: stage.label, text: `現在のデータからは「${stage.view}」という視座に近いと推定されます。${stage.trait}` };
 
     // 打ち手のタイプ診断（レーティング・着順・チップ収支から7分類で判定）
-    const playstyleMetrics = buildPlaystyleMetrics(memberId, pcFilter);
+    const playstyleMetrics = buildPlaystyleMetrics(memberId, pcFilter, mode);
     if(playstyleMetrics){
       const styleDef = classifyPlaystyleV2(pcFilter, playstyleMetrics);
       if(styleDef) styleResult = { key: styleDef.key, label: styleDef.label, text: styleDef.desc };
@@ -3968,7 +3988,9 @@ const Ranking = {
           await Promise.all(DB.history.map(s=>{ const rule=getRule(s.ruleId); return Promise.resolve(pushSessionToGlobalRanking(s, rule)); }));
           await Promise.all(DB.settlements.map(st=>{ const rule=getRule(st.ruleId); return Promise.resolve(pushSettlementToGlobalRanking(st, rule)); }));
           await loadRankingData();
-          renderInfoModal('反映しました', `この端末の対局${DB.history.length}件・精算表${DB.settlements.length}件でランキングを作り直しました。`);
+          const nonFreeGames = DB.history.filter(s=>!isFreeRule(getRule(s.ruleId))).length;
+          const nonFreeSettlements = DB.settlements.filter(s=>!isFreeRule(getRule(s.ruleId))).length;
+          renderInfoModal('反映しました', `この端末の対局${nonFreeGames}件・精算表${nonFreeSettlements}件でランキングを作り直しました（フリー雀荘のデータは対象外です）。`);
         }catch(e){
           console.error(e);
           renderInfoModal('失敗しました', firestoreErrorMessage(e, 'mahjong_global_games'));
@@ -4010,10 +4032,19 @@ function renderAnalysis(){
     </div>`;
   }
   const pcFilter = UI.analysisPlayerCount;
+  UI.analysisMode = UI.analysisMode || 'set';
+  const hasFreeRule = DB.rules.some(r=>r.freeEnabled);
+  if(hasFreeRule){
+    html+=`<div class="sub-tabs">
+      <div class="st ${UI.analysisMode==='set'?'active':''}" onclick="Analysis.setMode('set')">セット</div>
+      <div class="st ${UI.analysisMode==='free'?'active':''}" onclick="Analysis.setMode('free')">フリー</div>
+    </div>`;
+  }
+  const mode = hasFreeRule ? UI.analysisMode : 'set';
 
   if(UI.showInsights){
     const targetId = UI.analysisMemberId==='ALL' ? (DB.members[0]&&DB.members[0].id) : UI.analysisMemberId;
-    const result = targetId ? generateInsights(targetId, pcFilter) : { composite:null, notes:[] };
+    const result = targetId ? generateInsights(targetId, pcFilter, mode) : { composite:null, notes:[] };
     const notes = result.notes || [];
     html+=`<div class="card" style="background:linear-gradient(180deg,#f3f0ff,#eae4fb);border:1.5px solid #cdbdf2">
       <h3>✨ AI分析（${targetId?esc(memberName(targetId)):''}）</h3>
@@ -4078,14 +4109,14 @@ function renderAnalysis(){
       if(n.type==='bad') return `<div style="padding:8px 10px;margin:6px 0;border-radius:8px;background:rgba(220,38,38,.12);font-size:13.5px;line-height:1.6"><span style="color:#b91c1c;font-weight:700">🔴 ${esc(n.text)}</span></div>`;
       return `<div style="padding:6px 0;border-bottom:1px dashed var(--border);font-size:13.5px">・${esc(n.text)}</div>`;
     }).join('')}
-    <button class="btn block" style="margin-top:14px" onclick='Analysis.showActionPlan(${JSON.stringify(targetId)}, ${JSON.stringify(pcFilter)})'>🎯 今より上手くなるためにまず何をするべき？</button>
-    ${UI.actionPlanFor===targetId+'_'+pcFilter ? renderActionPlanHtml(targetId, pcFilter) : ''}
+    <button class="btn block" style="margin-top:14px" onclick='Analysis.showActionPlan(${JSON.stringify(targetId)}, ${JSON.stringify(pcFilter)}, ${JSON.stringify(mode)})'>🎯 今より上手くなるためにまず何をするべき？</button>
+    ${UI.actionPlanFor===targetId+'_'+pcFilter+'_'+mode ? renderActionPlanHtml(targetId, pcFilter, mode) : ''}
     </div>`;
   }
 
   if(UI.analysisMemberId==='ALL'){
     html+=`<div class="card"><h3>メンバー別 通算成績</h3></div>`;
-    const rows=DB.members.map(m=>({m,s:computeStats(m.id,pcFilter),c:computeSettlementStats(m.id,pcFilter)})).filter(x=>x.s);
+    const rows=DB.members.map(m=>({m,s:computeStats(m.id,pcFilter,mode),c:computeSettlementStats(m.id,pcFilter,mode)})).filter(x=>x.s);
     rows.sort((a,b)=>b.s.totalPoint-a.s.totalPoint);
     if(rows.length===0){
       html+=`<div class="card"><div class="small-note">データがまだありません</div></div>`;
@@ -4109,7 +4140,7 @@ function renderAnalysis(){
             <span class="chip" style="padding:5px 10px;font-size:11.5px;font-weight:600;background:rgba(255,255,255,.16);color:#fff;cursor:default">平均${s.avgRank.toFixed(2)}位</span>
             <span class="chip" style="padding:5px 10px;font-size:11.5px;font-weight:600;background:rgba(255,255,255,.16);color:#fff;cursor:default">トップ${s.topRate.toFixed(0)}%</span>
             <span class="chip" style="padding:5px 10px;font-size:11.5px;font-weight:600;background:rgba(255,255,255,.16);color:#fff;cursor:default">ラス${s.lastRate.toFixed(0)}%</span>
-            ${(()=>{ const pm=buildPlaystyleMetrics(m.id,pcFilter); const sd=pm?classifyPlaystyleV2(pcFilter,pm):null; return sd?`<span class="chip" style="padding:5px 10px;font-size:11.5px;font-weight:700;background:#e6b84a;color:#3a2905" onclick="event.stopPropagation();Analysis.showPlaystyleList(${pcFilter}, '${sd.key}')">🎭 ${esc(sd.label)}</span>`:''; })()}`:''}
+            ${(()=>{ const pm=buildPlaystyleMetrics(m.id,pcFilter,mode); const sd=pm?classifyPlaystyleV2(pcFilter,pm):null; return sd?`<span class="chip" style="padding:5px 10px;font-size:11.5px;font-weight:700;background:#e6b84a;color:#3a2905" onclick="event.stopPropagation();Analysis.showPlaystyleList(${pcFilter}, '${sd.key}')">🎭 ${esc(sd.label)}</span>`:''; })()}`:''}
           </div>
           <div class="row" style="gap:16px;margin-top:10px;padding-top:10px;border-top:1px dashed rgba(255,255,255,.25)">
             <div class="grow">
@@ -4126,13 +4157,13 @@ function renderAnalysis(){
     });
   } else {
     const m=getMember(UI.analysisMemberId);
-    const s=computeStats(UI.analysisMemberId,pcFilter);
-    const c=computeSettlementStats(UI.analysisMemberId,pcFilter);
-    const t=computeTobashiStats(UI.analysisMemberId,pcFilter);
+    const s=computeStats(UI.analysisMemberId,pcFilter,mode);
+    const c=computeSettlementStats(UI.analysisMemberId,pcFilter,mode);
+    const t=computeTobashiStats(UI.analysisMemberId,pcFilter,mode);
     if(!s){ html+=`<div class="card"><div class="small-note">${esc(m?m.name:'')} の対局記録がまだありません</div></div>`; }
     else {
-      const s3all = pcFilter==='all' ? computeStats(UI.analysisMemberId, 3) : null;
-      const s4all = pcFilter==='all' ? computeStats(UI.analysisMemberId, 4) : null;
+      const s3all = pcFilter==='all' ? computeStats(UI.analysisMemberId, 3, mode) : null;
+      const s4all = pcFilter==='all' ? computeStats(UI.analysisMemberId, 4, mode) : null;
       const ratingHtml = pcFilter==='all'
         ? `<div class="row" style="gap:10px;margin-bottom:6px">
             ${s3all?ratingCardHtml(getMemberRating(UI.analysisMemberId,3),3):''}
@@ -4188,7 +4219,7 @@ function renderAnalysis(){
         </div>
       </div>`;
 
-      if(pcFilter===3 || pcFilter===4){
+      if((pcFilter===3 || pcFilter===4) && mode==='set'){
         ensureMemberDefaults(m);
         const extEntries = (m.externalGames && m.externalGames[pcFilter]) || [];
         html+=`<div class="card">
@@ -4234,7 +4265,7 @@ function renderAnalysis(){
         </div>`;
       }
 
-      const ruleRows = computeRuleBreakdown(UI.analysisMemberId, pcFilter);
+      const ruleRows = computeRuleBreakdown(UI.analysisMemberId, pcFilter, mode);
       if(ruleRows.length){
         html+=`<div class="card"><h3>ルール別成績</h3>
         <table class="score-board"><thead><tr><th>ルール</th><th>試合</th><th>平均順位</th><th>トップ率</th><th>通算</th></tr></thead><tbody>
@@ -4245,10 +4276,10 @@ function renderAnalysis(){
         </tbody></table></div>`;
       }
 
-      const opp=computeHeadToHead(UI.analysisMemberId,pcFilter);
+      const opp=computeHeadToHead(UI.analysisMemberId,pcFilter,mode);
       const oppEntries=Object.entries(opp);
-      const opp3 = pcFilter==='all' ? computeHeadToHead(UI.analysisMemberId,3) : null;
-      const opp4 = pcFilter==='all' ? computeHeadToHead(UI.analysisMemberId,4) : null;
+      const opp3 = pcFilter==='all' ? computeHeadToHead(UI.analysisMemberId,3,mode) : null;
+      const opp4 = pcFilter==='all' ? computeHeadToHead(UI.analysisMemberId,4,mode) : null;
       if(oppEntries.length){
         html+=`<div class="card"><h3>対戦相手別 成績</h3></div>`;
         oppEntries.sort((a,b)=>b[1].scoreDiff-a[1].scoreDiff).forEach(([oid,o])=>{
@@ -4310,7 +4341,7 @@ function renderAnalysis(){
               </div>
               ${UI.showInsights && pcFilter!=='all' ? `
               <div class="section-title">✨ AI分析</div>
-              ${generateOpponentInsight(UI.analysisMemberId, oid, pcFilter).map(n=>{
+              ${generateOpponentInsight(UI.analysisMemberId, oid, pcFilter, mode).map(n=>{
                 if(n.type==='good') return `<div style="padding:7px 9px;margin:5px 0;border-radius:8px;background:rgba(37,99,235,.12);font-size:12.5px;line-height:1.6"><span style="color:#1d4ed8;font-weight:700">🔵 ${esc(n.text)}</span></div>`;
                 if(n.type==='bad') return `<div style="padding:7px 9px;margin:5px 0;border-radius:8px;background:rgba(220,38,38,.12);font-size:12.5px;line-height:1.6"><span style="color:#b91c1c;font-weight:700">🔴 ${esc(n.text)}</span></div>`;
                 return `<div style="padding:5px 0;border-bottom:1px dashed var(--border);font-size:12.5px">・${esc(n.text)}</div>`;
@@ -4346,6 +4377,7 @@ function renderAnalysis(){
 }
 const Analysis = {
   setMember(id){ UI.analysisMemberId=id; UI.analysisOpponentId=null; UI.expandedOpponentId=null; render(); },
+  setMode(mode){ UI.analysisMode=mode; UI.analysisOpponentId=null; UI.expandedOpponentId=null; render(); },
   setOpponent(id){ UI.analysisOpponentId=id; localStorage.setItem('mj_collapse_analysisGames','0'); render(); },
   clearOpponent(){ UI.analysisOpponentId=null; render(); },
   toggleOpponentExpand(oid){ UI.expandedOpponentId = (UI.expandedOpponentId===oid) ? null : oid; render(); },
@@ -4381,8 +4413,8 @@ const Analysis = {
         </div>
       </div>`;
   },
-  showActionPlan(targetId, pcFilter){
-    const key = targetId+'_'+pcFilter;
+  showActionPlan(targetId, pcFilter, mode){
+    const key = targetId+'_'+pcFilter+'_'+mode;
     UI.actionPlanFor = (UI.actionPlanFor===key) ? null : key;
     render();
   },
@@ -4763,11 +4795,11 @@ const Settings = {
   setSub(s){ UI.settingsSub=s; render(); },
   async backfillGlobalRanking(){
     if(!fbAuth || !currentUser){ renderInfoModal('ログインが必要です','ランキングへの反映にはログインが必要です。'); return; }
-    const targets = DB.history.filter(s=>!s.globalId);
-    // 精算表：まだ未反映のもの ＋ 自分が作成者のもの（作成者名を後から設定した場合など、既存のグローバルデータが古いままになっているのを直すため毎回再送信する）
-    const settlementTargets = DB.settlements.filter(s=>!s.globalId || s.creatorUid===currentUser.uid);
+    const targets = DB.history.filter(s=>!s.globalId && !isFreeRule(getRule(s.ruleId)));
+    // 精算表：まだ未反映のもの ＋ 自分が作成者のもの（作成者名を後から設定した場合など、既存のグローバルデータが古いままになっているのを直すため毎回再送信する）。フリー雀荘のデータは対象外。
+    const settlementTargets = DB.settlements.filter(s=>!isFreeRule(getRule(s.ruleId)) && (!s.globalId || s.creatorUid===currentUser.uid));
     if(targets.length===0 && settlementTargets.length===0){ renderInfoModal('反映済みです','未反映の過去データはありませんでした。'); return; }
-    showConfirmModal('過去のデータをランキングに反映しますか？', `対局${targets.length}件、精算表${settlementTargets.length}件を共有ランキングに送信します（自分が作成者の精算表は、作成者名などの最新情報で上書きされます）。`, ()=>{
+    showConfirmModal('過去のデータをランキングに反映しますか？', `対局${targets.length}件、精算表${settlementTargets.length}件を共有ランキングに送信します（自分が作成者の精算表は、作成者名などの最新情報で上書きされます。フリー雀荘のデータは対象外です）。`, ()=>{
       targets.forEach(s=>{ s.globalId = computeSessionFingerprint(s); });
       settlementTargets.forEach(s=>{ if(!s.globalId) s.globalId = computeSettlementFingerprint(s); });
       persist('history'); persist('settlements');
