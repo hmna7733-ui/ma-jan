@@ -2673,7 +2673,8 @@ function computeSettlementStats(memberId, pcFilter, mode, shopName){
     if(!pm) return;
     settlementCount++;
     chipCount += pm.chipCount||0;
-    const scoreYen = st.rateEnabledUsed ? pm.scorePoint*st.rateUsed : 0;
+    const useFreeAdjusted = st.freeSettlementUsed && pm.freeAdjustedMoney!==undefined;
+    const scoreYen = useFreeAdjusted ? pm.freeAdjustedMoney : (st.rateEnabledUsed ? pm.scorePoint*st.rateUsed : 0);
     const chipYen = st.chipEnabledUsed ? (pm.chipCount||0)*st.chipValueUsed : 0;
     moneyTotal += scoreYen + chipYen;
   });
