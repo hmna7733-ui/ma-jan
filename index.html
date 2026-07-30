@@ -876,6 +876,21 @@ function roundRawScoreForRule(rawScore, rule){
   return Math.round(rawScore/1000)*1000;
 }
 
+/* フリー雀荘のセッションについて、各プレイヤーの「ゲーム代（・トップ賞）を差し引いた後の金額」を計算する。
+   セッション保存時に固定されたゲーム代・トップ賞・レートを使うため、後でルールの設定を変えても過去の記録は変わらない。
+   戻り値は { memberId: adjustedYen, ... } と shopTotal（お店が受け取る合計）のセット。 */
+function computeFreeAdjustedSession(session, rule){
+  const gameFee = session.freeGameFeeUsed!==undefined ? session.freeGameFeeUsed : (rule&&rule.freeGameFee||0);
+  const topPrize = session.freeTopPrizeUsed!==undefined ? session.freeTopPrizeUsed : (rule&&rule.freeTopPrize||0);
+  const rate = session.freeRateUsed!==undefined ? session.freeRateUsed : (rule&&rule.rate||0);
+  const perMember = {};
+  session.players.forEach(p=>{
+    const baseYen = p.point*rate;
+    perMember[p.memberId] = baseYen - gameFee - (p.rank===1 ? topPrize : 0);
+  });
+  const shopTotal = session.players.length*gameFee + topPrize;
+  return { perMember, shopTotal, gameFee, topPrize };
+}
 function computeSession(rule, entries, options){
   options = options || {};
   const tobashiTargetId = options.tobashiTargetId || null;
@@ -1107,8 +1122,14 @@ function renderHome(){
     const totals={};
     let babaSum=0;
     let freeShopSum=0;
+    const isFreeToday = isFreeRule(rule);
     todaySessions.forEach(s=>{
-      s.players.forEach(p=>{ totals[p.memberId]=(totals[p.memberId]||0)+p.point; });
+      if(isFreeToday){
+        const adj = computeFreeAdjustedSession(s, rule);
+        s.players.forEach(p=>{ totals[p.memberId]=(totals[p.memberId]||0)+(adj.perMember[p.memberId]||0); });
+      } else {
+        s.players.forEach(p=>{ totals[p.memberId]=(totals[p.memberId]||0)+p.point; });
+      }
       babaSum += s.babaTotal||0;
       freeShopSum += s.freeShopTotal||0;
     });
@@ -1122,9 +1143,12 @@ function renderHome(){
           ${avatarHtml(mid,idx<2?30:24)}
           <span style="font-size:${big};font-weight:800;color:#fff3d0">${esc(memberName(mid))}</span>
         </div>
-        <span style="font-size:${big};font-weight:800;color:${total>0?'#7fe89a':total<0?'#ff8f87':'#fff3d0'}">${sign(Math.round(total*10)/10)}</span>
+        <span style="font-size:${big};font-weight:800;color:${total>0?'#7fe89a':total<0?'#ff8f87':'#fff3d0'}">${sign(Math.round(total*10)/10)}${isFreeToday?'P':''}</span>
       </div>`;
     });
+    if(isFreeToday && todaySessions.length){
+      html += `<div style="font-size:10.5px;color:rgba(255,243,208,.7);padding:4px 0">※ゲーム代・トップ賞込みの金額です</div>`;
+    }
     if(babaSum){
       html += `<div class="row" style="justify-content:space-between;align-items:center;padding:8px 0">
         <span style="color:rgba(255,243,208,.85)">🏮 場代</span>
@@ -1134,7 +1158,7 @@ function renderHome(){
     if(freeShopSum){
       html += `<div class="row" style="justify-content:space-between;align-items:center;padding:8px 0">
         <span style="color:rgba(255,243,208,.85)">🏪 ${esc(rule.freeShopName||'お店')}</span>
-        <span style="font-weight:800;color:#fff3d0">${Math.round(freeShopSum)}円</span>
+        <span style="font-weight:800;color:#fff3d0">${todaySessions.length}G　${Math.round(freeShopSum)}P</span>
       </div>`;
     }
   }
@@ -1203,15 +1227,19 @@ function renderHome(){
 function sessionCardHtml(s, readOnly){
   const rBase = getRule(s.ruleId);
   const r = rBase ? getEffectiveRule(rBase, s.date) : rBase;
+  const isFree = isFreeRule(rBase);
+  const freeAdj = isFree ? computeFreeAdjustedSession(s, rBase) : null;
   const sortedP = [...s.players].sort((a,b)=>a.rank-b.rank);
   return `<div class="session-card">
     <div class="meta"><div class="d">${fmtDate(s.date)} ・ ${esc(r?r.name:'(ルール削除済)')}</div></div>
     <div class="players">
       ${sortedP.map(p=>{
         const chipDelta = s.chipDeltas ? s.chipDeltas[p.memberId] : undefined;
-        return `<span><span class="dot" style="width:7px;height:7px;border-radius:50%;background:${memberColor(p.memberId)};display:inline-block"></span>${p.rank}位 ${esc(memberName(p.memberId))} ${p.rawScore}点 <b class="${p.point>0?'pos':p.point<0?'neg':''}">${sign(p.point)}</b>${yenText(p.point,r)}${chipDelta?` <span class="small-note">（チップ${sign(chipDelta)}枚）</span>`:''}</span>`;
+        const adjText = freeAdj ? ` <span class="small-note">（ゲーム代込み: ${sign(Math.round(freeAdj.perMember[p.memberId]||0))}P）</span>` : '';
+        return `<span><span class="dot" style="width:7px;height:7px;border-radius:50%;background:${memberColor(p.memberId)};display:inline-block"></span>${p.rank}位 ${esc(memberName(p.memberId))} ${p.rawScore}点 <b class="${p.point>0?'pos':p.point<0?'neg':''}">${sign(p.point)}</b>${yenText(p.point,r)}${adjText}${chipDelta?` <span class="small-note">（チップ${sign(chipDelta)}枚）</span>`:''}</span>`;
       }).join('')}
       ${s.babaTotal?`<span>🏮 場代 <b class="pos">${sign(s.babaTotal)}</b>${yenText(s.babaTotal,r)}</span>`:''}
+      ${freeAdj?`<span>🏪 ${esc(rBase.freeShopName||'お店')} <b class="pos">+${Math.round(freeAdj.shopTotal)}P</b></span>`:''}
     </div>
     ${readOnly?'':`<div class="actions">
       <button class="btn sm secondary" onclick="InputForm.openEdit('${s.id}')">編集</button>
@@ -1487,7 +1515,11 @@ const InputForm = {
     const tobiThreshold = rule.tobiRule==='minus100' ? -100 : 0;
     const bustedMemberIds = (rule.tobiAri && rule.tobiPenalty) ? entries.filter(e=>e.rawScore<=tobiThreshold).map(e=>e.memberId) : [];
     const tobashiTargetId = bustedMemberIds.length ? UI.formTobashiTarget : null;
-    const freeShopTotal = rule.freeEnabled ? (entries.length * (rule.freeGameFee||0) + (rule.freeTopPrize||0)) : 0;
+    const freeIsEnabled = !!rule.freeEnabled;
+    const freeGameFeeUsed = freeIsEnabled ? (rule.freeGameFee||0) : 0;
+    const freeTopPrizeUsed = freeIsEnabled ? (rule.freeTopPrize||0) : 0;
+    const freeRateUsed = freeIsEnabled ? (getEffectiveRule(rule, todayStr()).rate||0) : 0;
+    const freeShopTotal = freeIsEnabled ? (entries.length * freeGameFeeUsed + freeTopPrizeUsed) : 0;
     let sessionRef;
     if(UI.editingHistoryId){
       const s=DB.history.find(x=>x.id===UI.editingHistoryId);
@@ -1495,10 +1527,10 @@ const InputForm = {
       if(s.chipDeltas){
         Object.entries(s.chipDeltas).forEach(([mid,delta])=>{ if(delta) ChipTracker.addToFinalValue(mid, -delta, s.date); });
       }
-      s.ruleId=rule.id; s.players=players; s.babaTotal=computed.babaTotal; s.freeShopTotal=freeShopTotal; s.bustedMemberIds=bustedMemberIds; s.tobashiTargetId=tobashiTargetId;
+      s.ruleId=rule.id; s.players=players; s.babaTotal=computed.babaTotal; s.freeShopTotal=freeShopTotal; s.freeGameFeeUsed=freeGameFeeUsed; s.freeTopPrizeUsed=freeTopPrizeUsed; s.freeRateUsed=freeRateUsed; s.bustedMemberIds=bustedMemberIds; s.tobashiTargetId=tobashiTargetId;
       sessionRef = s;
     } else {
-      sessionRef = { id:uid(), globalId:uid(), date:todayStr(), ruleId:rule.id, players, babaTotal:computed.babaTotal, freeShopTotal, bustedMemberIds, tobashiTargetId };
+      sessionRef = { id:uid(), globalId:uid(), date:todayStr(), ruleId:rule.id, players, babaTotal:computed.babaTotal, freeShopTotal, freeGameFeeUsed, freeTopPrizeUsed, freeRateUsed, bustedMemberIds, tobashiTargetId };
       DB.history.push(sessionRef);
     }
     if(!sessionRef.globalId) sessionRef.globalId = computeSessionFingerprint(sessionRef);
@@ -1762,7 +1794,8 @@ function settlementCardHtml(st){
   const isFree = isFreeRule(rule);
   const memberRows = st.memberIds.map(mid=>{
     const pm = st.perMember[mid] || {scorePoint:0, chipCount:0};
-    const scoreYen = rateEnabled ? Math.round(pm.scorePoint*rateUsed) : null;
+    const useFreeAdjusted = st.freeSettlementUsed && pm.freeAdjustedMoney!==undefined;
+    const scoreYen = useFreeAdjusted ? Math.round(pm.freeAdjustedMoney) : (rateEnabled ? Math.round(pm.scorePoint*rateUsed) : null);
     const chipYen = chipEnabled ? Math.round((pm.chipCount||0)*chipValueUsed) : 0;
     const totalYen = (scoreYen!==null ? scoreYen : 0) + chipYen;
     const hasTotal = (scoreYen!==null || chipEnabled);
@@ -1776,11 +1809,18 @@ function settlementCardHtml(st){
         <div style="font-size:13px;color:rgba(255,255,255,.7);line-height:1.7">
           スコア ${sign(Math.round(pm.scorePoint*10)/10)}<br>
           ${chipEnabled?'チップ '+((pm.chipCount>0?'+':'')+(pm.chipCount||0))+'枚':''}
+          ${useFreeAdjusted?'<br><span style="opacity:.8">（ゲーム代込み）</span>':''}
         </div>
         <div style="font-size:26px;font-weight:800;white-space:nowrap;color:${!hasTotal?'#fff':(totalYen>0?'#7fe89a':totalYen<0?'#ff8f87':'#fff')}">${hasTotal?sign(totalYen)+'P':'-'}</div>
       </div>
     </div>`;
   }).join('');
+  const shopRow = (st.freeSettlementUsed && st.freeShopTotal) ? `<div style="padding:12px 0;border-bottom:1px solid rgba(255,255,255,.12)">
+    <div class="row" style="justify-content:space-between;align-items:center">
+      <span style="font-size:15px;font-weight:700;color:#fff">🏪 ${esc((rule&&rule.freeShopName)||'お店')}</span>
+      <span style="font-size:22px;font-weight:800;color:#fff3d0">+${Math.round(st.freeShopTotal)}P</span>
+    </div>
+  </div>` : '';
   const expanded = UI.expandedSettlementId===st.id;
   const editingRate = UI.editingSettlementRateId===st.id;
   const sessions = DB.history.filter(h=>st.sessionIds.includes(h.id));
@@ -1806,7 +1846,7 @@ function settlementCardHtml(st){
           ${(canEdit && (rateEnabled||chipEnabled))?`<button class="link-btn" onclick="Settlement.toggleRateEdit('${st.id}')">編集</button>`:''}
         `}
       </div>
-      <div>${memberRows}</div>
+      <div>${memberRows}${shopRow}</div>
       <div style="display:flex;flex-direction:column;gap:10px;margin-top:12px">
         <button class="btn sm secondary" onclick="Settlement.toggleExpand('${st.id}')">${expanded?'対局履歴を閉じる':'対局履歴を見る（'+sessions.length+'件）'}</button>
         ${canEdit?`<button class="btn sm secondary" onclick="Settlement.unlock('${st.id}')">対局を編集</button>`:''}
@@ -1989,6 +2029,15 @@ const Settlement = {
         if(perMember[t.memberId]) perMember[t.memberId].chipCount += t.amount;
       }
     });
+    const isFreeSettlement = isFreeRule(rule);
+    const freeShopSumForSettlement = sessions.reduce((a,s)=>a+(s.freeShopTotal||0),0);
+    if(isFreeSettlement){
+      UI.home.memberIds.forEach(mid=>{ perMember[mid].freeAdjustedMoney = 0; });
+      sessions.forEach(s=>{
+        const adj = computeFreeAdjustedSession(s, rule);
+        Object.entries(adj.perMember).forEach(([mid,val])=>{ if(perMember[mid]) perMember[mid].freeAdjustedMoney += val; });
+      });
+    }
     const babaSumForSettlement = sessions.reduce((a,s)=>a+(s.babaTotal||0),0);
     const scoreCheckTotal = Object.values(perMember).reduce((a,m)=>a+m.scorePoint,0) + babaSumForSettlement;
     const chipCheckTotal = Object.values(perMember).reduce((a,m)=>a+(m.chipCount||0),0);
@@ -2000,6 +2049,10 @@ const Settlement = {
         moneyCheckTotal += scoreYen + chipYen;
       });
     }
+    let freeMoneyCheckTotal = 0;
+    if(isFreeSettlement){
+      freeMoneyCheckTotal = Object.values(perMember).reduce((a,m)=>a+(m.freeAdjustedMoney||0),0) + freeShopSumForSettlement;
+    }
     const doConfirm = ()=>{
       const id = uid();
       const selfMember = DB.members.find(m=>m.isSelf);
@@ -2009,6 +2062,7 @@ const Settlement = {
         perMember,
         rateEnabledUsed: rule.rateEnabled, rateUsed: effRule.rate,
         chipEnabledUsed: rule.chipEnabled, chipValueUsed: effRule.chipValue,
+        freeSettlementUsed: isFreeSettlement, freeShopTotal: isFreeSettlement ? freeShopSumForSettlement : undefined,
         creatorName: selfMember ? selfMember.name : null,
         creatorUid: currentUser ? currentUser.uid : null,
         confirmedAt:Date.now()
@@ -2029,6 +2083,7 @@ const Settlement = {
     if(sessions.length>0 && Math.abs(scoreCheckTotal)>0.05) mismatches.push(`スコアの差分：${sign(Math.round(scoreCheckTotal*10)/10)}点`);
     if(rule.chipEnabled && Math.abs(chipCheckTotal)>0.01) mismatches.push(`チップ枚数の差分：${sign(chipCheckTotal)}枚`);
     if((rule.rateEnabled||rule.chipEnabled) && Math.abs(moneyCheckTotal)>1) mismatches.push(`金額の差分：${sign(Math.round(moneyCheckTotal))}P`);
+    if(isFreeSettlement && Math.abs(freeMoneyCheckTotal)>1) mismatches.push(`成績とお店（${esc(rule.freeShopName||'お店')}）の金額を合わせた差分：${sign(Math.round(freeMoneyCheckTotal))}P（本来は成績とお店の合計が0になるはずです）`);
     if(mismatches.length){
       renderInfoModal('⚠️ ずれが発生しています！', `本来は合計が0になるはずですが、ズレがあります。\n${mismatches.join('\n')}\n対局結果やチップの入力に誤りがないかご確認のうえ、修正してからもう一度確定してください。`, '入力に戻る');
     } else {
