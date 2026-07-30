@@ -892,14 +892,19 @@ function roundMoneyForRule(moneyValue, rule){
 /* フリー雀荘のセッションについて、各プレイヤーの「ゲーム代（・トップ賞）を差し引いた後の金額」を計算する。
    セッション保存時に固定されたゲーム代・トップ賞・レートを使うため、後でルールの設定を変えても過去の記録は変わらない。
    戻り値は { memberId: adjustedYen, ... } と shopTotal（お店が受け取る合計）のセット。 */
+/* 符号（マイナス）を考慮してポイント端数処理を適用する（切り捨て/切り上げは0に向かう方向で丸める） */
+function roundSignedMoneyForRule(value, rule){
+  return value<0 ? -roundMoneyForRule(-value, rule) : roundMoneyForRule(value, rule);
+}
 function computeFreeAdjustedSession(session, rule){
   const gameFee = session.freeGameFeeUsed!==undefined ? session.freeGameFeeUsed : (rule&&rule.freeGameFee||0);
   const topPrize = session.freeTopPrizeUsed!==undefined ? session.freeTopPrizeUsed : (rule&&rule.freeTopPrize||0);
   const rate = session.freeRateUsed!==undefined ? session.freeRateUsed : (rule&&rule.rate||0);
   const perMember = {};
   session.players.forEach(p=>{
-    const baseYen = p.point*rate;
-    perMember[p.memberId] = baseYen - gameFee - (p.rank===1 ? topPrize : 0);
+    // まず素点の計算（ポイント端数処理があれば先にそれを適用）、その端数処理後の金額からゲーム代・トップ賞を差し引く
+    const roundedYen = roundSignedMoneyForRule(p.point*rate, rule);
+    perMember[p.memberId] = roundedYen - gameFee - (p.rank===1 ? topPrize : 0);
   });
   const shopTotal = session.players.length*gameFee + topPrize;
   return { perMember, shopTotal, gameFee, topPrize };
@@ -1016,8 +1021,7 @@ function yenText(point, rule){
   if(rule && rule.rateEnabled && rule.rate){
     // rate は「1000点あたり◯P」を直接表す値（例：rate=100なら1000点=100P）
     // point は「1000点単位」の最終ポイントなので、P = point × rate
-    const raw = point*rule.rate;
-    const yen = raw<0 ? -roundMoneyForRule(-raw, rule) : roundMoneyForRule(raw, rule);
+    const yen = roundSignedMoneyForRule(point*rule.rate, rule);
     return ` <span class="small-note">(${sign(yen)}P)</span>`;
   }
   return '';
