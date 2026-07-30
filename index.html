@@ -1055,22 +1055,26 @@ function renderHome(){
   html += `<label class="field">メンバー選択（${rule.playerCount}人）</label>`;
   if(isFree){
     const shopName = rule.freeShopName || 'お店';
+    const selfMembers = DB.members.filter(m=>m.isSelf && !m.freeShopName);
     const staffSlots = getOrCreateFreeShopSlots(shopName, 'staff');
     const customerSlots = getOrCreateFreeShopSlots(shopName, 'customer');
-    const renderSlotChip = (m)=>{
+    const renderSlotChip = (m, renamable)=>{
       const selected = UI.home.memberIds.includes(m.id);
       const disabled = !selected && UI.home.memberIds.length>=rule.playerCount;
       return `<div class="chip ${selected?'selected':''} ${disabled?'disabled':''}" style="display:inline-flex;align-items:center;gap:4px">
         <span onclick="${disabled?'':`Home.toggleMember('${m.id}')`}" style="display:flex;align-items:center;gap:4px"><span class="dot" style="background:${selected?'#fff':m.color}"></span>${esc(m.name)}</span>
-        <span onclick="event.stopPropagation();Home.renameFreeMember('${m.id}')" style="opacity:.7;padding-left:2px">✏️</span>
+        ${renamable?`<span onclick="event.stopPropagation();Home.renameFreeMember('${m.id}')" style="opacity:.7;padding-left:2px">✏️</span>`:''}
       </div>`;
     };
-    html += `<div class="small-note" style="margin-bottom:6px">🎰「${esc(shopName)}」専用のメンバーです。仲良くなったら✏️で名前を編集できます（このお店の対局にだけ使われ、セットのメンバーには表示されません）。</div>
-    <div class="row wrap" style="gap:6px">${staffSlots.map(renderSlotChip).join('')}
+    html += `<div class="small-note" style="margin-bottom:6px">🎰「${esc(shopName)}」専用のメンバーです。仲良くなったら✏️で名前を編集できます（このお店の対局にだけ使われ、セットのメンバーには表示されません）。</div>`;
+    if(selfMembers.length){
+      html += `<div class="row wrap" style="gap:6px;margin-bottom:8px">${selfMembers.map(m=>renderSlotChip(m,false)).join('')}</div>`;
+    }
+    html += `<div class="row wrap" style="gap:6px">${staffSlots.map(m=>renderSlotChip(m,true)).join('')}
       <div class="chip" style="background:var(--card2);border:1px dashed var(--border)" onclick="Home.addFreeSlot('${esc(shopName).replace(/'/g,"&#39;")}','staff')">＋メンバー追加</div>
     </div>
     <div class="small-note" style="margin:8px 0 4px">お客さん</div>
-    <div class="row wrap" style="gap:6px">${customerSlots.map(renderSlotChip).join('')}
+    <div class="row wrap" style="gap:6px">${customerSlots.map(m=>renderSlotChip(m,true)).join('')}
       <div class="chip" style="background:var(--card2);border:1px dashed var(--border)" onclick="Home.addFreeSlot('${esc(shopName).replace(/'/g,"&#39;")}','customer')">＋お客さん追加</div>
     </div>`;
   } else {
@@ -4848,7 +4852,9 @@ function renderSettings(){
       DB.rules.forEach(r=>{
         const key = 'rulemembers_'+r.id;
         const collapsed = isSectionCollapsed(key);
-        const ms = DB.members.filter(m=>!m.excludedRuleIds||!m.excludedRuleIds.includes(r.id));
+        const ms = isFreeRule(r)
+          ? DB.members.filter(m=>m.freeShopName===r.freeShopName)
+          : DB.members.filter(m=>!m.freeShopName && (!m.excludedRuleIds||!m.excludedRuleIds.includes(r.id)));
         html+=`<div style="margin-bottom:6px">
           <div class="row" style="justify-content:space-between;align-items:center;cursor:pointer;padding:8px 4px" onclick="toggleSectionCollapse('${key}')">
             <div style="font-weight:700;font-size:13.5px">${esc(r.name)}（${ms.length}人）</div>
@@ -5598,7 +5604,7 @@ function renderRuleModal(){
       <div class="field-wrap"><label class="field">同点の際のルール</label>
         <select onchange="Settings.updateDraft('tiebreakRule', this.value)">
           <option value="split" ${d.tiebreakRule==='split'?'selected':''}>折半（同着扱い）</option>
-          <option value="atamahane" ${d.tiebreakRule==='atamahane'?'selected':''}>頭ハネ（着順を決める）</option>
+          <option value="atamahane" ${d.tiebreakRule==='atamahane'?'selected':''}>上家優先・頭ハネ（着順を決める）</option>
         </select>
         <div class="hint">頭ハネの場合、対局結果の入力時に同点者の着順を選ぶ必要があります。</div>
       </div>
@@ -5853,7 +5859,7 @@ function renderRuleDetailModal(){
   const extraYakumanLabel = {daisharin:'大車輪',daisharin_free:'大車輪（ピンズ以外も可）',surenko:'四連刻',manzu_routou:'萬子老頭',nagashi_tanyao:'流しタンヤオ',other:'その他'};
   const rows = [
     ['人数', r.playerCount+'人打ち'],
-    ['参加メンバー', (()=>{ const ms=DB.members.filter(m=>!m.excludedRuleIds||!m.excludedRuleIds.includes(r.id)); return ms.length? ms.map(m=>esc(m.name)).join('・') : 'なし'; })()],
+    ['参加メンバー', (()=>{ const ms = isFreeRule(r) ? DB.members.filter(m=>m.freeShopName===r.freeShopName) : DB.members.filter(m=>!m.freeShopName && (!m.excludedRuleIds||!m.excludedRuleIds.includes(r.id))); return ms.length? ms.map(m=>esc(m.name)).join('・') : 'なし'; })()],
     ['レート', r.rateEnabled ? ('1000点＝'+r.rate+'P') : 'なし'],
     ['チップ', r.chipEnabled ? (r.chipValue+'P/枚・発動条件:'+({none:'なし',riichi:'リーチ祝儀',menzen:'面前祝儀',naki:'鳴き祝儀'}[r.chipCondition])) : 'なし'],
     ['役満祝儀', r.chipEnabled ? ('ツモ'+r.yakumanTsumoChip+'枚オール/ロン'+r.yakumanRonChip+'枚') : 'なし'],
@@ -5867,7 +5873,7 @@ function renderRuleDetailModal(){
     ['場代', r.babaEnabled ? (r.babaFromRank+'着のみ1人'+r.babaAmount+'点') : 'なし'],
     ['フリー（ゲーム代・トップ賞）', r.freeEnabled ? (esc(r.freeShopName||'お店')+'／ゲーム代'+r.freeGameFee+'円／トップ賞'+r.freeTopPrize+'円') : 'なし'],
     ['符計算/ツモ損', YN(r.fuCalculation)+' / '+YN(r.tsumoLoss)],
-    ['同点の際のルール', r.tiebreakRule==='atamahane' ? '頭ハネ（着順を決める）' : '折半（同着扱い）'],
+    ['同点の際のルール', r.tiebreakRule==='atamahane' ? '上家優先・頭ハネ（着順を決める）' : '折半（同着扱い）'],
     ['喰いタン/後付け/ツモピン', YN(r.kuitanAri)+' / '+YN(r.atozukeAri)+' / '+YN(r.tsumoPinAri)],
     ['一発/裏ドラ/カン裏', YN(r.ippatsuAri)+' / '+YN(r.uradoraAri)+' / '+YN(r.kanUradoraAri)],
     ['トビ終了', r.tobiAri ? ((r.tobiRule==='zero'?'0点で終了':'0点継続(-100以下)')+'・罰符'+r.tobiPenalty) : 'なし'],
@@ -5890,6 +5896,9 @@ function renderRuleDetailModal(){
     rows.push(['北の扱い', {none:'効果なし',kyotsuyaku:'共通役',nukidora:'抜きドラ'}[r.kitaHandling]]);
   }
   rows.push(['点数端数処理', {up:'切り上げ',down:'切り捨て',round:'四捨五入'}[r.rounding] + (r.roundingDetailEnabled ? `（詳細：${r.roundingThresholdValue}点以上は${({up:'切り上げ',down:'切り捨て',round:'四捨五入'}[r.roundingAboveMode])}、未満は${({up:'切り上げ',down:'切り捨て',round:'四捨五入'}[r.roundingBelowMode])}）` : '')]);
+  if((r.specialTiles||[]).length){
+    rows.push(['その他の特殊牌', r.specialTiles.map(t=>`${t.name||'(名称未設定)'}${t.effect?'：'+t.effect:''}`).join('　/　')]);
+  }
   const html=`
   <div class="modal-overlay" onclick="if(event.target===this) Settings.closeRuleDetail()">
     <div class="modal">
