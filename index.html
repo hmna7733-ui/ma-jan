@@ -1314,10 +1314,17 @@ function sessionCardHtml(s, readOnly){
     <div class="players">
       ${sortedP.map(p=>{
         const chipDelta = s.chipDeltas ? s.chipDeltas[p.memberId] : undefined;
-        const adjText = freeAdj ? ` <span class="small-note">（ゲ込み: ${sign(Math.round(freeAdj.perMember[p.memberId]||0))}P）</span>` : '';
+        const adjText = freeAdj ? `（G込み: ${sign(Math.round(freeAdj.perMember[p.memberId]||0))}P）` : '';
         const sideBetVal = sideBetResults ? sideBetResults[p.memberId] : undefined;
-        const sideBetText = sideBetVal!==undefined ? ` <span class="small-note">（個人戦${sign(Math.round(sideBetVal))}P）</span>` : '';
-        return `<span><span class="dot" style="width:7px;height:7px;border-radius:50%;background:${memberColor(p.memberId)};display:inline-block"></span>${p.rank}位 ${esc(memberName(p.memberId))} ${p.rawScore}点 <b class="${p.point>0?'pos':p.point<0?'neg':''}">${sign(p.point)}</b>${adjText}${sideBetText}${chipDelta?` <span class="small-note">（チップ${sign(chipDelta)}枚）</span>`:''}</span>`;
+        const chipText = chipDelta?`（チップ${sign(chipDelta)}枚）`:'';
+        const mainLine = `<span class="dot" style="width:7px;height:7px;border-radius:50%;background:${memberColor(p.memberId)};display:inline-block"></span>${p.rank}位 ${esc(memberName(p.memberId))} ${p.rawScore}点 <b class="${p.point>0?'pos':p.point<0?'neg':''}">${sign(p.point)}</b>${adjText?' <span class="small-note">'+adjText+'</span>':''}${chipText?' <span class="small-note">'+chipText+'</span>':''}`;
+        if(sideBetVal!==undefined){
+          return `<span style="flex-direction:column;align-items:flex-start;gap:2px;white-space:nowrap">
+            <span style="white-space:nowrap">${mainLine}</span>
+            <span class="small-note" style="white-space:nowrap">個人戦${sign(Math.round(sideBetVal))}P</span>
+          </span>`;
+        }
+        return `<span style="white-space:nowrap">${mainLine}</span>`;
       }).join('')}
       ${s.babaTotal?`<span>🏮 場代 <b class="pos">${sign(s.babaTotal)}</b>${yenText(s.babaTotal,r)}</span>`:''}
       ${freeAdj?`<span>🏪 ${esc(rBase.freeShopName||'お店')} <b class="pos">+${Math.round(freeAdj.shopTotal)}P</b></span>`:''}
@@ -1947,8 +1954,9 @@ function settlementCardHtml(st){
     const useFreeAdjusted = st.freeSettlementUsed && pm.freeAdjustedMoney!==undefined;
     const scoreYen = useFreeAdjusted ? Math.round(pm.freeAdjustedMoney) : (rateEnabled ? Math.round(pm.scorePoint*rateUsed) : null);
     const chipYen = chipEnabled ? Math.round((pm.chipCount||0)*chipValueUsed) : 0;
-    const totalYen = (scoreYen!==null ? scoreYen : 0) + chipYen;
-    const hasTotal = (scoreYen!==null || chipEnabled);
+    const sideBetYen = (st.hasSideBet && pm.sideBetTotal!==undefined) ? Math.round(pm.sideBetTotal) : 0;
+    const totalYen = (scoreYen!==null ? scoreYen : 0) + chipYen + sideBetYen;
+    const hasTotal = (scoreYen!==null || chipEnabled || sideBetYen);
     return `<div style="padding:12px 0;border-bottom:1px solid rgba(255,255,255,.12)">
       <div class="row" style="align-items:center;gap:8px;margin-bottom:8px">
         ${avatarHtml(mid,26)}
@@ -1960,6 +1968,7 @@ function settlementCardHtml(st){
           スコア ${sign(Math.round(pm.scorePoint*10)/10)}<br>
           ${chipEnabled?'チップ '+((pm.chipCount>0?'+':'')+(pm.chipCount||0))+'枚':''}
           ${useFreeAdjusted?'<br><span style="opacity:.8">（ゲーム代込み）</span>':''}
+          ${sideBetYen?`<br><span style="opacity:.8">（個人勝負分${sign(sideBetYen)}P含む）</span>`:''}
         </div>
         <div style="font-size:26px;font-weight:800;white-space:nowrap;color:${!hasTotal?'#fff':(totalYen>0?'#7fe89a':totalYen<0?'#ff8f87':'#fff')}">${hasTotal?sign(totalYen)+'P':'-'}</div>
       </div>
@@ -2424,7 +2433,14 @@ const Settlement = {
       rows.push(['チップの収支', sign(pm.chipCount||0)+'枚（'+sign(Math.round((pm.chipCount||0)*st.chipValueUsed))+'P）']);
     }
     if(isFree && st.freeShopTotal){
-      rows.push(['店（'+(rule&&rule.freeShopName||'お店')+'）に払った合計', '（参加者全員分）'+Math.round(st.freeShopTotal)+'P']);
+      const mySessions = DB.history.filter(h=>st.sessionIds.includes(h.id));
+      let myPaid = 0;
+      mySessions.forEach(h=>{
+        const p = h.players.find(pl=>pl.memberId===memberId);
+        if(!p) return;
+        myPaid += (h.freeGameFeeUsed||0) + (p.rank===1 ? (h.freeTopPrizeUsed||0) : 0);
+      });
+      rows.push(['店（'+(rule&&rule.freeShopName||'お店')+'）に払った合計', Math.round(myPaid)+'P']);
     }
     if(st.hasSideBet && pm.sideBetTotal!==undefined){
       rows.push(['個人勝負の収支', sign(Math.round(pm.sideBetTotal))+'P']);
