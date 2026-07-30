@@ -806,6 +806,7 @@ function ensureRuleDefaults(r){
     renchanType:'agari', shibariType:'none', shibariHan:2,
     fuCalculation:true, tsumoLoss:false, tsumoPinAri:true,
     kitaHandling:'nukidora',
+    ruleCategory:'set',
     specialTiles:[], memo:''
   };
   if(typeof r.akaDora==='number' && r.akaDoraMan===undefined){
@@ -830,6 +831,8 @@ function ensureRuleDefaults(r){
   if(r.kitaHandling===undefined && r.kitaDoraEnabled!==undefined){
     r.kitaHandling = r.kitaDoraEnabled ? 'nukidora' : 'none';
   }
+  // 既存のフリー雀荘ルール（ruleCategory未設定）は、自動的に「フリー」区分に移行する
+  if(r.ruleCategory===undefined && r.freeEnabled) r.ruleCategory='free';
   for(const k in def){ if(r[k]===undefined) r[k]=def[k]; }
   return r;
 }
@@ -4805,11 +4808,24 @@ function renderSettings(){
     <div class="st ${UI.settingsSub==='account'?'active':''}" onclick="Settings.setSub('account')">アカウント</div>
   </div>`;
   if(UI.settingsSub==='rules'){
-    html+=`<div class="card"><h3>🀄 登録済みルール</h3>`;
-    if(DB.rules.length===0){ html+=`<div class="small-note">未登録</div>`; }
-    DB.rules.forEach(r=>{
-      html+=`<div class="rating-card" style="background:radial-gradient(circle at 82% 100%, rgba(120,140,220,.3), transparent 55%), linear-gradient(160deg,#0d0f1f,#1a1d38 55%,#0a0b17);border:1.5px solid rgba(140,150,230,.4);padding:14px;margin-bottom:10px">
-        <div class="rating-card-icon" style="font-size:64px">📜</div>
+    UI.ruleCategoryFilter = UI.ruleCategoryFilter || 'set';
+    const ruleCategoryColors = {
+      set:  { grad:'radial-gradient(circle at 82% 100%, rgba(120,140,220,.3), transparent 55%), linear-gradient(160deg,#0d0f1f,#1a1d38 55%,#0a0b17)', border:'rgba(140,150,230,.4)', icon:'📜' },
+      game: { grad:'radial-gradient(circle at 82% 100%, rgba(79,195,180,.32), transparent 55%), linear-gradient(160deg,#06201d,#0f3a34 55%,#04120f)', border:'rgba(79,195,180,.45)', icon:'🎮' },
+      free: { grad:'radial-gradient(circle at 82% 100%, rgba(180,120,230,.32), transparent 55%), linear-gradient(160deg,#170e24,#241a3a 55%,#0f0a1a)', border:'rgba(180,120,230,.5)', icon:'🎰' }
+    };
+    html+=`<div class="card"><h3>🀄 登録済みルール</h3>
+      <div class="sub-tabs" style="margin-bottom:4px">
+        <div class="st ${UI.ruleCategoryFilter==='set'?'active':''}" onclick="Settings.setRuleCategoryFilter('set')">セット</div>
+        <div class="st ${UI.ruleCategoryFilter==='game'?'active':''}" onclick="Settings.setRuleCategoryFilter('game')">ゲーム</div>
+        <div class="st ${UI.ruleCategoryFilter==='free'?'active':''}" onclick="Settings.setRuleCategoryFilter('free')">フリー</div>
+      </div>`;
+    const filteredRules = DB.rules.filter(r=>(r.ruleCategory||'set')===UI.ruleCategoryFilter);
+    if(filteredRules.length===0){ html+=`<div class="small-note">このカテゴリのルールはまだありません。</div>`; }
+    filteredRules.forEach(r=>{
+      const cc = ruleCategoryColors[r.ruleCategory||'set'];
+      html+=`<div class="rating-card" style="background:${cc.grad};border:1.5px solid ${cc.border};padding:14px;margin-bottom:10px">
+        <div class="rating-card-icon" style="font-size:64px">${cc.icon}</div>
         <div class="rating-card-shine"></div>
         <div style="position:relative;z-index:1;display:flex;justify-content:space-between;align-items:center;gap:10px">
           <div style="cursor:pointer;flex:1;min-width:0" onclick="Settings.viewRuleDetail('${r.id}')">
@@ -5109,6 +5125,13 @@ const Settings = {
     d.tsumiboValue = n===3 ? 1000 : 100;
     rerenderRulePreserve();
   },
+  setRuleCategory(cat){
+    const d=UI.ruleDraft;
+    d.ruleCategory = cat;
+    d.freeEnabled = (cat==='free');
+    rerenderRulePreserve();
+  },
+  setRuleCategoryFilter(cat){ UI.ruleCategoryFilter = cat; render(); },
   applyUmaPreset(arr){ UI.ruleDraft.uma=[...arr]; rerenderRulePreserve(); },
   updateDraft(key,val){ UI.ruleDraft[key]=val; },
   toggleDraft(key){ UI.ruleDraft[key]=!UI.ruleDraft[key]; rerenderRulePreserve(); },
@@ -5414,6 +5437,14 @@ function renderRuleModal(){
       <div class="section-title">基本設定</div>
       <div class="field-wrap"><label class="field">ルール名</label>
         <input type="text" value="${esc(d.name)}" oninput="Settings.updateDraft('name', this.value)"></div>
+      <div class="field-wrap"><label class="field">ルール種別</label>
+        <div class="row">
+          <div class="chip ${d.ruleCategory==='set'?'selected':''}" onclick="Settings.setRuleCategory('set')">セット</div>
+          <div class="chip ${d.ruleCategory==='game'?'selected':''}" onclick="Settings.setRuleCategory('game')">ゲーム</div>
+          <div class="chip ${d.ruleCategory==='free'?'selected':''}" onclick="Settings.setRuleCategory('free')">フリー</div>
+        </div>
+        <div class="hint">セット・ゲームはこれまで通りまとめてデータ集計・ランキングに反映されます（登録済みルール一覧の分類にのみ使う区分です）。フリーを選ぶと、下の「フリー（フリー雀荘）」設定が自動でオンになり、データが完全に分けて管理されます。</div>
+      </div>
       <div class="field-wrap"><label class="field">人数</label>
         <div class="row">
           <div class="chip ${d.playerCount===4?'selected':''}" onclick="Settings.setPlayerCount(4)">4人打ち</div>
