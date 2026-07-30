@@ -1314,17 +1314,22 @@ function sessionCardHtml(s, readOnly){
     <div class="players">
       ${sortedP.map(p=>{
         const chipDelta = s.chipDeltas ? s.chipDeltas[p.memberId] : undefined;
-        const adjText = freeAdj ? `（G込み: ${sign(Math.round(freeAdj.perMember[p.memberId]||0))}P）` : '';
+        const adjText = freeAdj ? `G込み: ${sign(Math.round(freeAdj.perMember[p.memberId]||0))}P` : '';
         const sideBetVal = sideBetResults ? sideBetResults[p.memberId] : undefined;
-        const chipText = chipDelta?`（チップ${sign(chipDelta)}枚）`:'';
-        const mainLine = `<span class="dot" style="width:7px;height:7px;border-radius:50%;background:${memberColor(p.memberId)};display:inline-block"></span>${p.rank}位 ${esc(memberName(p.memberId))} ${p.rawScore}点 <b class="${p.point>0?'pos':p.point<0?'neg':''}">${sign(p.point)}</b>${adjText?' <span class="small-note">'+adjText+'</span>':''}${chipText?' <span class="small-note">'+chipText+'</span>':''}`;
-        if(sideBetVal!==undefined){
-          return `<span style="flex-direction:column;align-items:flex-start;gap:2px;white-space:nowrap">
-            <span style="white-space:nowrap">${mainLine}</span>
-            <span class="small-note" style="white-space:nowrap">個人戦${sign(Math.round(sideBetVal))}P</span>
-          </span>`;
-        }
-        return `<span style="white-space:nowrap">${mainLine}</span>`;
+        const chipText = chipDelta?`チップ${sign(chipDelta)}枚`:'';
+        return `<div style="width:100%;display:flex;justify-content:space-between;align-items:flex-start;gap:8px;background:var(--accent-light);padding:8px 10px;border-radius:9px">
+          <div style="min-width:0">
+            <div style="display:flex;align-items:center;gap:5px;font-weight:700">
+              <span class="dot" style="width:7px;height:7px;border-radius:50%;background:${memberColor(p.memberId)};display:inline-block;flex-shrink:0"></span>
+              <span>${p.rank}位 ${esc(memberName(p.memberId))}</span>
+            </div>
+            <div style="margin-top:2px">${p.rawScore}点 <b class="${p.point>0?'pos':p.point<0?'neg':''}">${sign(p.point)}</b>${chipText?' <span class="small-note">（'+chipText+'）</span>':''}</div>
+          </div>
+          <div style="text-align:right;flex-shrink:0">
+            ${adjText?`<div class="small-note">（${adjText}）</div>`:''}
+            ${sideBetVal!==undefined?`<div class="small-note">（個人戦${sign(Math.round(sideBetVal))}P）</div>`:''}
+          </div>
+        </div>`;
       }).join('')}
       ${s.babaTotal?`<span>🏮 場代 <b class="pos">${sign(s.babaTotal)}</b>${yenText(s.babaTotal,r)}</span>`:''}
       ${freeAdj?`<span>🏪 ${esc(rBase.freeShopName||'お店')} <b class="pos">+${Math.round(freeAdj.shopTotal)}P</b></span>`:''}
