@@ -713,7 +713,47 @@ function ensureMemberDefaults(m){
   if(!m.externalGames) m.externalGames={3:[],4:[]};
   if(!m.externalGames[3]) m.externalGames[3]=[];
   if(!m.externalGames[4]) m.externalGames[4]=[];
+  // フリー雀荘専用メンバー（店員さん/お客さん）かどうかの情報
+  if(m.freeShopName===undefined) m.freeShopName=null;
+  if(m.freeSlotType===undefined) m.freeSlotType=null; // 'staff' | 'customer'
+  if(m.freeSlotIndex===undefined) m.freeSlotIndex=null;
   return m;
+}
+/* フリー雀荘のプレースホルダー名（メンバー1、お客さん1 など、まだ名前を編集していない状態）かどうか */
+function isFreePlaceholderName(name){
+  return /^(メンバー|お客さん)\d+$/.test(name||'');
+}
+/* 指定した店名の「メンバーさん」または「お客さん」枠を、無ければ5人分作成して返す */
+function getOrCreateFreeShopSlots(shopName, slotType){
+  const label = slotType==='staff' ? 'メンバー' : 'お客さん';
+  let slots = DB.members.filter(m=>m.freeShopName===shopName && m.freeSlotType===slotType);
+  if(slots.length===0){
+    for(let i=1;i<=5;i++){
+      const newMember = ensureMemberDefaults({
+        id:uid(), name:label+i, color:PALETTE[(DB.members.length+i) % PALETTE.length],
+        isSelf:false, excludedRuleIds:[], aliases:[],
+        freeShopName:shopName, freeSlotType:slotType, freeSlotIndex:i
+      });
+      DB.members.push(newMember);
+      slots.push(newMember);
+    }
+    persist('members');
+  }
+  return slots.sort((a,b)=>(a.freeSlotIndex||0)-(b.freeSlotIndex||0));
+}
+/* 指定した店名・種別の枠をもう1人分追加する */
+function addFreeShopSlot(shopName, slotType){
+  const label = slotType==='staff' ? 'メンバー' : 'お客さん';
+  const existing = DB.members.filter(m=>m.freeShopName===shopName && m.freeSlotType===slotType);
+  const nextIndex = existing.length ? Math.max(...existing.map(m=>m.freeSlotIndex||0))+1 : 1;
+  const newMember = ensureMemberDefaults({
+    id:uid(), name:label+nextIndex, color:PALETTE[(DB.members.length+nextIndex) % PALETTE.length],
+    isSelf:false, excludedRuleIds:[], aliases:[],
+    freeShopName:shopName, freeSlotType:slotType, freeSlotIndex:nextIndex
+  });
+  DB.members.push(newMember);
+  persist('members');
+  return newMember;
 }
 
 let DB = { rules:[], members:[], history:[], chipTx:[], groups:[], settlements:[] };
@@ -1008,18 +1048,43 @@ function renderHome(){
       <button class="link-btn" onclick="Home.openRateOverride()">${hasOverride?'本日は変更中（編集）':'本日だけ変更する'}</button>
     </div>`;
   }
-  const visibleMembers = DB.members.filter(m => !m.excludedRuleIds || !m.excludedRuleIds.includes(rule.id));
-  html += `<label class="field">メンバー選択（${rule.playerCount}人）</label><div class="row wrap">`;
-  if(visibleMembers.length===0){
-    html += `<span class="small-note">${DB.members.length===0?'メンバーが未登録です。':'このルールのグループに該当するメンバーがいません。'}<button class="link-btn" onclick="Router.go('settings')">設定で追加</button></span>`;
-  } else {
-    visibleMembers.forEach(m=>{
+  const isFree = isFreeRule(rule);
+  html += `<label class="field">メンバー選択（${rule.playerCount}人）</label>`;
+  if(isFree){
+    const shopName = rule.freeShopName || 'お店';
+    const staffSlots = getOrCreateFreeShopSlots(shopName, 'staff');
+    const customerSlots = getOrCreateFreeShopSlots(shopName, 'customer');
+    const renderSlotChip = (m)=>{
       const selected = UI.home.memberIds.includes(m.id);
       const disabled = !selected && UI.home.memberIds.length>=rule.playerCount;
-      html += `<div class="chip ${selected?'selected':''} ${disabled?'disabled':''}" onclick="${disabled?'':`Home.toggleMember('${m.id}')`}"><span class="dot" style="background:${selected?'#fff':m.color}"></span>${esc(m.name)}</div>`;
-    });
+      return `<div class="chip ${selected?'selected':''} ${disabled?'disabled':''}" style="display:inline-flex;align-items:center;gap:4px">
+        <span onclick="${disabled?'':`Home.toggleMember('${m.id}')`}" style="display:flex;align-items:center;gap:4px"><span class="dot" style="background:${selected?'#fff':m.color}"></span>${esc(m.name)}</span>
+        <span onclick="event.stopPropagation();Home.renameFreeMember('${m.id}')" style="opacity:.7;padding-left:2px">✏️</span>
+      </div>`;
+    };
+    html += `<div class="small-note" style="margin-bottom:6px">🎰「${esc(shopName)}」専用のメンバーです。仲良くなったら✏️で名前を編集できます（このお店の対局にだけ使われ、セットのメンバーには表示されません）。</div>
+    <div class="row wrap" style="gap:6px">${staffSlots.map(renderSlotChip).join('')}
+      <div class="chip" style="background:var(--card2);border:1px dashed var(--border)" onclick="Home.addFreeSlot('${esc(shopName).replace(/'/g,"&#39;")}','staff')">＋メンバー追加</div>
+    </div>
+    <div class="small-note" style="margin:8px 0 4px">お客さん</div>
+    <div class="row wrap" style="gap:6px">${customerSlots.map(renderSlotChip).join('')}
+      <div class="chip" style="background:var(--card2);border:1px dashed var(--border)" onclick="Home.addFreeSlot('${esc(shopName).replace(/'/g,"&#39;")}','customer')">＋お客さん追加</div>
+    </div>`;
+  } else {
+    const visibleMembers = DB.members.filter(m => !m.freeShopName && (!m.excludedRuleIds || !m.excludedRuleIds.includes(rule.id)));
+    html += `<div class="row wrap">`;
+    if(visibleMembers.length===0){
+      html += `<span class="small-note">${DB.members.length===0?'メンバーが未登録です。':'このルールのグループに該当するメンバーがいません。'}<button class="link-btn" onclick="Router.go('settings')">設定で追加</button></span>`;
+    } else {
+      visibleMembers.forEach(m=>{
+        const selected = UI.home.memberIds.includes(m.id);
+        const disabled = !selected && UI.home.memberIds.length>=rule.playerCount;
+        html += `<div class="chip ${selected?'selected':''} ${disabled?'disabled':''}" onclick="${disabled?'':`Home.toggleMember('${m.id}')`}"><span class="dot" style="background:${selected?'#fff':m.color}"></span>${esc(m.name)}</div>`;
+      });
+    }
+    html += `</div>`;
   }
-  html += `</div></div></div></div>`;
+  html += `</div></div></div>`;
   }
   const todaySessions = DB.history.filter(h=>h.date===todayStr() && h.ruleId===rule.id && !h.settlementId);
   const readyToInput = UI.home.memberIds.length===rule.playerCount;
@@ -1150,6 +1215,28 @@ function sessionCardHtml(s, readOnly){
 
 const Home = {
   setRule(id){ UI.home.ruleId=id||null; UI.home.memberIds=[]; localStorage.setItem('mj_collapse_homeSettings', '0'); render(); },
+  renameFreeMember(memberId){
+    const m = getMember(memberId);
+    if(!m) return;
+    UI.renameFreeMemberId = memberId;
+    UI.renameFreeMemberDraft = m.name;
+    renderRenameFreeMemberModal();
+  },
+  addFreeSlot(shopName, slotType){
+    addFreeShopSlot(shopName, slotType);
+    render();
+  },
+  saveFreeMemberName(){
+    const m = getMember(UI.renameFreeMemberId);
+    if(!m) return;
+    const name = (UI.renameFreeMemberDraft||'').trim();
+    if(!name){ renderInfoModal('名前が未入力です','名前を入力してください。'); return; }
+    m.name = name;
+    persist('members');
+    UI.renameFreeMemberId = null;
+    document.getElementById('modalRoot').innerHTML='';
+    render();
+  },
   toggleMember(id){
     const i=UI.home.memberIds.indexOf(id);
     if(i>=0) UI.home.memberIds.splice(i,1); else UI.home.memberIds.push(id);
@@ -1665,6 +1752,7 @@ function settlementCardHtml(st){
   const chipEnabled = !!st.chipEnabledUsed;
   const rateUsed = st.rateUsed||0;
   const chipValueUsed = st.chipValueUsed||0;
+  const isFree = isFreeRule(rule);
   const memberRows = st.memberIds.map(mid=>{
     const pm = st.perMember[mid] || {scorePoint:0, chipCount:0};
     const scoreYen = rateEnabled ? Math.round(pm.scorePoint*rateUsed) : null;
@@ -1675,6 +1763,7 @@ function settlementCardHtml(st){
       <div class="row" style="align-items:center;gap:8px;margin-bottom:8px">
         ${avatarHtml(mid,26)}
         <span style="font-size:17px;font-weight:700;color:#fff">${esc(memberName(mid))}</span>
+        ${isFree?`<span onclick="event.stopPropagation();Home.renameFreeMember('${mid}')" style="opacity:.75;cursor:pointer">✏️</span>`:''}
       </div>
       <div class="row" style="justify-content:space-between;align-items:center">
         <div style="font-size:13px;color:rgba(255,255,255,.7);line-height:1.7">
@@ -1689,7 +1778,6 @@ function settlementCardHtml(st){
   const editingRate = UI.editingSettlementRateId===st.id;
   const sessions = DB.history.filter(h=>st.sessionIds.includes(h.id));
   const canEdit = !!currentUser && (!st.creatorUid || st.creatorUid===currentUser.uid || UI.isAdmin);
-  const isFree = isFreeRule(rule);
   const cardBg = isFree
     ? 'radial-gradient(circle at 85% 100%, rgba(180,120,230,.32), transparent 55%), linear-gradient(160deg,#170e24,#241a3a 55%,#0f0a1a)'
     : 'radial-gradient(circle at 85% 100%, rgba(230,190,90,.28), transparent 55%), linear-gradient(160deg,#0e1710,#1c2b1f 55%,#0a120c)';
@@ -2144,13 +2232,14 @@ const History = {
 /* ============ 描画: 分析 ============ */
 /* ルールがフリー（フリー雀荘）設定かどうか */
 function isFreeRule(rule){ return !!(rule && rule.freeEnabled); }
-function gamesForMember(memberId, pcFilter, mode){
+function gamesForMember(memberId, pcFilter, mode, shopName){
   return DB.history.filter(s=>{
     if(!s.players.some(p=>p.memberId===memberId)) return false;
     const r=getRule(s.ruleId);
     if(pcFilter!=='all' && !(r && r.playerCount===pcFilter)) return false;
     if(mode==='set' && isFreeRule(r)) return false;
     if(mode==='free' && !isFreeRule(r)) return false;
+    if(mode==='free' && shopName && (!r || r.freeShopName!==shopName)) return false;
     return true;
   });
 }
@@ -2409,9 +2498,9 @@ function ratingCardHtml(r, playerCount){
   </div>`;
 }
 
-function computeStats(memberId, pcFilter, mode){
+function computeStats(memberId, pcFilter, mode, shopName){
   pcFilter = pcFilter || 'all';
-  const games = gamesForMember(memberId, pcFilter, mode);
+  const games = gamesForMember(memberId, pcFilter, mode, shopName);
   const n=games.length;
   if(n===0) return null;
   let rankCount=[0,0,0,0], totalPoint=0;
@@ -2447,9 +2536,9 @@ function avgRankFromCounts(rankCounts, games){
 }
 
 /* 飛ばし回数（罰符を受け取った回数）・飛ばされた＝箱下にされた回数 */
-function computeTobashiStats(memberId, pcFilter, mode){
+function computeTobashiStats(memberId, pcFilter, mode, shopName){
   pcFilter = pcFilter || 'all';
-  const games = gamesForMember(memberId, pcFilter, mode);
+  const games = gamesForMember(memberId, pcFilter, mode, shopName);
   let tobashiCount=0, bustedCount=0;
   games.forEach(s=>{
     if(s.tobashiTargetId===memberId) tobashiCount++;
@@ -2487,7 +2576,7 @@ function computeSettlementSort(ruleId, startDate, endDate){
   return rows;
 }
 
-function computeSettlementStats(memberId, pcFilter, mode){
+function computeSettlementStats(memberId, pcFilter, mode, shopName){
   pcFilter = pcFilter || 'all';
   let chipCount=0, moneyTotal=0, settlementCount=0;
   DB.settlements.forEach(st=>{
@@ -2499,6 +2588,7 @@ function computeSettlementStats(memberId, pcFilter, mode){
     }
     if(mode==='set' && isFreeRule(rule)) return;
     if(mode==='free' && !isFreeRule(rule)) return;
+    if(mode==='free' && shopName && (!rule || rule.freeShopName!==shopName)) return;
     const pm = st.perMember[memberId];
     if(!pm) return;
     settlementCount++;
@@ -2512,7 +2602,7 @@ function computeSettlementStats(memberId, pcFilter, mode){
 
 /* 対戦相手別成績：スコア差・チップ差・金額差は「相手の合計値の符号を反転したもの」で統一
    （多人数戦のため厳密な1対1のやり取りではないが、相手にどれだけ勝ち越したかの目安として計算） */
-function computeHeadToHead(memberId, pcFilter, mode){
+function computeHeadToHead(memberId, pcFilter, mode, shopName){
   pcFilter = pcFilter || 'all';
   const opp={};
   const ensure=(oid)=>{ if(!opp[oid]) opp[oid]={games:0,win:0,lose:0,draw:0,scoreDiff:0,chipDiff:0,moneyDiff:0,rankCounts:[0,0,0,0],maxRank:0,tobashiFromCount:0,tobashiToCount:0,umaMi:0}; return opp[oid]; };
@@ -2524,6 +2614,7 @@ function computeHeadToHead(memberId, pcFilter, mode){
     if(pcFilter!=='all' && (!rule || rule.playerCount!==pcFilter)) return;
     if(mode==='set' && isFreeRule(rule)) return;
     if(mode==='free' && !isFreeRule(rule)) return;
+    if(mode==='free' && shopName && (!rule || rule.freeShopName!==shopName)) return;
     const me=s.players.find(p=>p.memberId===memberId);
     if(!me) return;
     s.players.forEach(p=>{
@@ -2570,6 +2661,7 @@ function computeHeadToHead(memberId, pcFilter, mode){
     }
     if(mode==='set' && isFreeRule(rule)) return;
     if(mode==='free' && !isFreeRule(rule)) return;
+    if(mode==='free' && shopName && (!rule || rule.freeShopName!==shopName)) return;
     const values = st.memberIds.map(mid=>{
       const pm = st.perMember[mid] || {scorePoint:0,chipCount:0};
       const scoreYen = st.rateEnabledUsed ? pm.scorePoint*st.rateUsed : 0;
@@ -2600,6 +2692,7 @@ function computeHeadToHead(memberId, pcFilter, mode){
     if(pc!==3) return;
     if(mode==='set' && isFreeRule(rule)) return;
     if(mode==='free' && !isFreeRule(rule)) return;
+    if(mode==='free' && shopName && (!rule || rule.freeShopName!==shopName)) return;
     const values = st.memberIds.map(mid=>{
       const pm = st.perMember[mid] || {scorePoint:0,chipCount:0};
       return { mid, chipCount: pm.chipCount||0 };
@@ -2622,10 +2715,10 @@ function computeHeadToHead(memberId, pcFilter, mode){
 }
 
 /* ルール別成績 */
-function computeRuleBreakdown(memberId, pcFilter, mode){
+function computeRuleBreakdown(memberId, pcFilter, mode, shopName){
   pcFilter = pcFilter || 'all';
   const byRule = {};
-  gamesForMember(memberId, pcFilter, mode).forEach(s=>{
+  gamesForMember(memberId, pcFilter, mode, shopName).forEach(s=>{
     if(!byRule[s.ruleId]) byRule[s.ruleId] = { n:0, totalPoint:0, rankSum:0, topCount:0 };
     const p = s.players.find(pp=>pp.memberId===memberId);
     const b = byRule[s.ruleId];
@@ -3161,11 +3254,11 @@ function classifyPlaystyleV2(pcFilter, metrics){
   return matched[0];
 }
 /* 判定に必要なmetricsをまとめて作るヘルパー（AI分析・メンバー一覧などから共通で使う） */
-function buildPlaystyleMetrics(memberId, pcFilter, mode){
-  const s = computeStats(memberId, pcFilter, mode);
+function buildPlaystyleMetrics(memberId, pcFilter, mode, shopName){
+  const s = computeStats(memberId, pcFilter, mode, shopName);
   if(!s) return null;
-  const c = computeSettlementStats(memberId, pcFilter, mode);
-  const t = computeTobashiStats(memberId, pcFilter, mode);
+  const c = computeSettlementStats(memberId, pcFilter, mode, shopName);
+  const t = computeTobashiStats(memberId, pcFilter, mode, shopName);
   const rating = getMemberRating(memberId, pcFilter);
   const chipPerGame = s.n ? c.chipCount/s.n : undefined;
   const rank2Rate = (s.rankCount[1]||0)/s.n*100;
@@ -4041,6 +4134,19 @@ function renderAnalysis(){
     </div>`;
   }
   const mode = hasFreeRule ? UI.analysisMode : 'set';
+  let shopName = null;
+  if(mode==='free'){
+    const shopNames = Array.from(new Set(DB.rules.filter(r=>r.freeEnabled && r.freeShopName).map(r=>r.freeShopName)));
+    UI.analysisShopFilter = (UI.analysisShopFilter && shopNames.includes(UI.analysisShopFilter)) ? UI.analysisShopFilter : (shopNames[0]||null);
+    shopName = UI.analysisShopFilter;
+    if(shopNames.length){
+      html+=`<div class="field-wrap" style="margin-top:8px"><label class="field">🎰 お店で絞り込み</label>
+        <select onchange="Analysis.setShopFilter(this.value)">
+          ${shopNames.map(sn=>`<option value="${esc(sn)}" ${shopName===sn?'selected':''}>${esc(sn)}</option>`).join('')}
+        </select>
+      </div>`;
+    }
+  }
 
   if(UI.showInsights){
     const targetId = UI.analysisMemberId==='ALL' ? (DB.members[0]&&DB.members[0].id) : UI.analysisMemberId;
@@ -4116,7 +4222,7 @@ function renderAnalysis(){
 
   if(UI.analysisMemberId==='ALL'){
     html+=`<div class="card"><h3>メンバー別 通算成績</h3></div>`;
-    const rows=DB.members.map(m=>({m,s:computeStats(m.id,pcFilter,mode),c:computeSettlementStats(m.id,pcFilter,mode)})).filter(x=>x.s);
+    const rows=DB.members.map(m=>({m,s:computeStats(m.id,pcFilter,mode,shopName),c:computeSettlementStats(m.id,pcFilter,mode,shopName)})).filter(x=>x.s);
     rows.sort((a,b)=>b.s.totalPoint-a.s.totalPoint);
     if(rows.length===0){
       html+=`<div class="card"><div class="small-note">データがまだありません</div></div>`;
@@ -4157,9 +4263,9 @@ function renderAnalysis(){
     });
   } else {
     const m=getMember(UI.analysisMemberId);
-    const s=computeStats(UI.analysisMemberId,pcFilter,mode);
-    const c=computeSettlementStats(UI.analysisMemberId,pcFilter,mode);
-    const t=computeTobashiStats(UI.analysisMemberId,pcFilter,mode);
+    const s=computeStats(UI.analysisMemberId,pcFilter,mode,shopName);
+    const c=computeSettlementStats(UI.analysisMemberId,pcFilter,mode,shopName);
+    const t=computeTobashiStats(UI.analysisMemberId,pcFilter,mode,shopName);
     if(!s){ html+=`<div class="card"><div class="small-note">${esc(m?m.name:'')} の対局記録がまだありません</div></div>`; }
     else {
       const s3all = pcFilter==='all' ? computeStats(UI.analysisMemberId, 3, mode) : null;
@@ -4265,7 +4371,7 @@ function renderAnalysis(){
         </div>`;
       }
 
-      const ruleRows = computeRuleBreakdown(UI.analysisMemberId, pcFilter, mode);
+      const ruleRows = computeRuleBreakdown(UI.analysisMemberId, pcFilter, mode, shopName);
       if(ruleRows.length){
         html+=`<div class="card"><h3>ルール別成績</h3>
         <table class="score-board"><thead><tr><th>ルール</th><th>試合</th><th>平均順位</th><th>トップ率</th><th>通算</th></tr></thead><tbody>
@@ -4276,8 +4382,11 @@ function renderAnalysis(){
         </tbody></table></div>`;
       }
 
-      const opp=computeHeadToHead(UI.analysisMemberId,pcFilter,mode);
-      const oppEntries=Object.entries(opp);
+      const opp=computeHeadToHead(UI.analysisMemberId,pcFilter,mode,shopName);
+      let oppEntries=Object.entries(opp);
+      if(mode==='free'){
+        oppEntries = oppEntries.filter(([oid])=>!isFreePlaceholderName(memberName(oid)));
+      }
       const opp3 = pcFilter==='all' ? computeHeadToHead(UI.analysisMemberId,3,mode) : null;
       const opp4 = pcFilter==='all' ? computeHeadToHead(UI.analysisMemberId,4,mode) : null;
       if(oppEntries.length){
@@ -4378,6 +4487,7 @@ function renderAnalysis(){
 const Analysis = {
   setMember(id){ UI.analysisMemberId=id; UI.analysisOpponentId=null; UI.expandedOpponentId=null; render(); },
   setMode(mode){ UI.analysisMode=mode; UI.analysisOpponentId=null; UI.expandedOpponentId=null; render(); },
+  setShopFilter(shopName){ UI.analysisShopFilter=shopName; render(); },
   setOpponent(id){ UI.analysisOpponentId=id; localStorage.setItem('mj_collapse_analysisGames','0'); render(); },
   clearOpponent(){ UI.analysisOpponentId=null; render(); },
   toggleOpponentExpand(oid){ UI.expandedOpponentId = (UI.expandedOpponentId===oid) ? null : oid; render(); },
@@ -4737,15 +4847,16 @@ function renderSettings(){
     }
     {
       const membersCollapsed = isSectionCollapsed('registeredMembers');
+      const regularMembers = DB.members.filter(m=>!m.freeShopName);
       html+=`<div class="card">
         <div class="row" style="justify-content:space-between;align-items:center;cursor:pointer" onclick="toggleSectionCollapse('registeredMembers')">
-          <h3 style="margin-bottom:0">👤 登録済みメンバー（${DB.members.length}人）</h3>
+          <h3 style="margin-bottom:0">👤 登録済みメンバー（${regularMembers.length}人）</h3>
           <span style="font-size:18px">${membersCollapsed?'▸':'▾'}</span>
         </div>`;
       if(!membersCollapsed){
         html+=`<div style="margin-top:10px">`;
-        if(DB.members.length===0){ html+=`<div class="small-note">未登録</div>`; }
-        DB.members.forEach(m=>{
+        if(regularMembers.length===0){ html+=`<div class="small-note">未登録</div>`; }
+        regularMembers.forEach(m=>{
           const excludedNames = (m.excludedRuleIds||[]).map(rid=>{ const r=getRule(rid); return r?r.name:null; }).filter(Boolean);
           html+=`<div class="member-row" style="flex-direction:column;align-items:stretch">
             <div class="row" style="justify-content:space-between;align-items:center">
@@ -4762,6 +4873,35 @@ function renderSettings(){
         html+=`</div>`;
       }
       html+=`</div>`;
+    }
+    {
+      const shopNames = Array.from(new Set(DB.members.filter(m=>m.freeShopName).map(m=>m.freeShopName)));
+      if(shopNames.length){
+        shopNames.forEach(shopName=>{
+          const key = 'freeShopMembers_'+shopName;
+          const collapsed = isSectionCollapsed(key);
+          const staff = DB.members.filter(m=>m.freeShopName===shopName && m.freeSlotType==='staff').sort((a,b)=>(a.freeSlotIndex||0)-(b.freeSlotIndex||0));
+          const customers = DB.members.filter(m=>m.freeShopName===shopName && m.freeSlotType==='customer').sort((a,b)=>(a.freeSlotIndex||0)-(b.freeSlotIndex||0));
+          html+=`<div class="card">
+            <div class="row" style="justify-content:space-between;align-items:center;cursor:pointer" onclick="toggleSectionCollapse('${key}')">
+              <h3 style="margin-bottom:0">🎰 ${esc(shopName)}のメンバー</h3>
+              <span style="font-size:18px">${collapsed?'▸':'▾'}</span>
+            </div>`;
+          if(!collapsed){
+            const renderRow = (m)=>`<div class="member-row">
+              <div class="nm">${avatarHtml(m.id,28)} ${esc(m.name)}</div>
+              <div class="row" style="gap:6px">
+                <button class="btn sm secondary" onclick="Settings.editMember('${m.id}')">編集</button>
+                <button class="btn sm danger" onclick="Settings.removeMember('${m.id}')">削除</button>
+              </div>
+            </div>`;
+            html+=`<div class="small-note" style="margin:8px 0 4px">メンバーさん</div>${staff.map(renderRow).join('')}
+            <div class="small-note" style="margin:8px 0 4px">お客さん</div>${customers.map(renderRow).join('')}
+            <div class="small-note" style="margin-top:6px">※このお店のメンバーは、フリー用のルールにだけ表示され、セットのメンバー選択には表示されません。</div>`;
+          }
+          html+=`</div>`;
+        });
+      }
     }
     html+=`<button class="btn block" onclick="Settings.newMember()">＋ メンバーを追加</button>
     <button class="btn ghost block" style="margin-top:8px" onclick="Settings.openMergeMembers()">🔗 同一人物のメンバーを統合</button>`;
@@ -5619,6 +5759,24 @@ function renderInfoModal(title, message, buttonLabel){
     </div>`;
 }
 function closeInfoModal(){ document.getElementById('modalRoot').innerHTML=''; }
+
+/* フリー雀荘のメンバーさん・お客さんの名前をその場で編集するモーダル */
+function renderRenameFreeMemberModal(){
+  const m = getMember(UI.renameFreeMemberId);
+  if(!m) return;
+  document.getElementById('modalRoot').innerHTML = `
+    <div class="modal-overlay" onclick="if(event.target===this) closeInfoModal()">
+      <div class="modal">
+        <div class="modal-head"><h2>名前を編集</h2><button class="close-x" onclick="closeInfoModal()">✕</button></div>
+        <div class="small-note" style="margin-bottom:8px">「${esc(m.freeSlotType==='staff'?'メンバー':'お客さん')}」の枠の名前です。仲良くなったら実際の名前に変えてあげてください。</div>
+        <input type="text" value="${esc(UI.renameFreeMemberDraft||'')}" oninput="UI.renameFreeMemberDraft=this.value">
+        <div class="row" style="gap:8px;margin-top:14px">
+          <button class="btn secondary grow" onclick="closeInfoModal()">キャンセル</button>
+          <button class="btn grow" onclick="Home.saveFreeMemberName()">保存</button>
+        </div>
+      </div>
+    </div>`;
+}
 
 /* 対局入力フォーム専用の警告モーダル：閉じると入力していた内容のまま入力画面に戻る */
 function renderFormWarningModal(title, message){
