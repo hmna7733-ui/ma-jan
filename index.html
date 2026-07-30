@@ -801,6 +801,8 @@ function ensureRuleDefaults(r){
     chiitoi4Ari:false, yonchoroAri:false, shiroPocchiAri:false, hanaPaiAri:false, yakitoriAri:false,
     rounding:'down', roundingDetailEnabled:false,
     roundingThresholdValue:30000, roundingAboveMode:'down', roundingBelowMode:'up',
+    pointRounding:'down', pointRoundingDetailEnabled:false,
+    pointRoundingThresholdValue:3000, pointRoundingAboveMode:'down', pointRoundingBelowMode:'up',
     rateEnabled:false, rate:0,
     chipEnabled:false, chipValue:500, chipCondition:'none', yakumanTsumoChip:10, yakumanRonChip:20, chipPerGameEnabled:false,
     renchanType:'agari', shibariType:'none', shibariHan:2,
@@ -874,6 +876,17 @@ function roundRawScoreForRule(rawScore, rule){
   if(mode==='up') return Math.ceil(rawScore/1000)*1000;
   if(mode==='down') return Math.floor(rawScore/1000)*1000;
   return Math.round(rawScore/1000)*1000;
+}
+/* ポイント（P・金額換算値）の端数処理：100の位を丸める（例：2250Pを切り上げなら2300、切り捨てなら2200）。
+   点数端数処理と同じ考え方で、詳細設定が有効な場合は閾値以上/未満で処理を分ける。 */
+function roundMoneyForRule(moneyValue, rule){
+  let mode = (rule&&rule.pointRounding) || 'down';
+  if(rule && rule.pointRoundingDetailEnabled){
+    mode = (moneyValue >= rule.pointRoundingThresholdValue) ? rule.pointRoundingAboveMode : rule.pointRoundingBelowMode;
+  }
+  if(mode==='up') return Math.ceil(moneyValue/100)*100;
+  if(mode==='down') return Math.floor(moneyValue/100)*100;
+  return Math.round(moneyValue/100)*100;
 }
 
 /* フリー雀荘のセッションについて、各プレイヤーの「ゲーム代（・トップ賞）を差し引いた後の金額」を計算する。
@@ -1003,7 +1016,8 @@ function yenText(point, rule){
   if(rule && rule.rateEnabled && rule.rate){
     // rate は「1000点あたり◯P」を直接表す値（例：rate=100なら1000点=100P）
     // point は「1000点単位」の最終ポイントなので、P = point × rate
-    const yen = Math.round(point*rule.rate);
+    const raw = point*rule.rate;
+    const yen = raw<0 ? -roundMoneyForRule(-raw, rule) : roundMoneyForRule(raw, rule);
     return ` <span class="small-note">(${sign(yen)}P)</span>`;
   }
   return '';
@@ -5252,6 +5266,7 @@ const Settings = {
     d.yakumanTsumoChip=numOrZero(d.yakumanTsumoChip);
     d.yakumanRonChip=numOrZero(d.yakumanRonChip);
     d.roundingThresholdValue=numOrZero(d.roundingThresholdValue);
+    d.pointRoundingThresholdValue=numOrZero(d.pointRoundingThresholdValue);
     d.kazoeYakumanHan=numOrZero(d.kazoeYakumanHan);
     d.shibariHan=numOrZero(d.shibariHan);
     if(UI.editingRuleId){ DB.rules[DB.rules.findIndex(r=>r.id===UI.editingRuleId)]=d; }
@@ -5819,6 +5834,36 @@ function renderRuleModal(){
           <div class="hint">例：30000点以上・切り捨てなら31200点→31000点。30000点未満・切り上げなら26800点→27000点。有効にするとこちらが共通設定より優先されます。</div>
         </div>`)}
 
+      <div class="field-wrap"><label class="field">ポイント端数処理（共通）</label>
+        <select onchange="Settings.updateDraft('pointRounding', this.value)">
+          <option value="up" ${d.pointRounding==='up'?'selected':''}>切り上げ</option>
+          <option value="down" ${d.pointRounding==='down'?'selected':''}>切り捨て</option>
+          <option value="round" ${d.pointRounding==='round'?'selected':''}>四捨五入</option>
+        </select>
+        <div class="hint">ポイント（P・金額換算値）の100の位を丸めます。例：2250Pなら切り捨てで2200P、切り上げで2300P。</div>
+      </div>
+      ${toggleRow('端数処理の詳細設定（ポイント）','ポイントが一定以上か未満かで丸め方を分けられます', d.pointRoundingDetailEnabled, "Settings.toggleDraft('pointRoundingDetailEnabled')",
+        `<div class="field-wrap">
+          <div class="row" style="align-items:center">
+            <input type="number" step="100" value="${d.pointRoundingThresholdValue}" ${d.pointRoundingDetailEnabled?'':'disabled'} oninput="Settings.updateDraft('pointRoundingThresholdValue', numOrZero(this.value))" style="width:110px">
+            <span class="small-note">P以上の場合</span>
+            <select ${d.pointRoundingDetailEnabled?'':'disabled'} onchange="Settings.updateDraft('pointRoundingAboveMode', this.value)" style="flex:1">
+              <option value="up" ${d.pointRoundingAboveMode==='up'?'selected':''}>切り上げ</option>
+              <option value="down" ${d.pointRoundingAboveMode==='down'?'selected':''}>切り捨て</option>
+              <option value="round" ${d.pointRoundingAboveMode==='round'?'selected':''}>四捨五入</option>
+            </select>
+          </div>
+          <div class="row" style="align-items:center;margin-top:6px">
+            <span class="small-note" style="width:110px">それ未満の場合</span>
+            <select ${d.pointRoundingDetailEnabled?'':'disabled'} onchange="Settings.updateDraft('pointRoundingBelowMode', this.value)" style="flex:1">
+              <option value="up" ${d.pointRoundingBelowMode==='up'?'selected':''}>切り上げ</option>
+              <option value="down" ${d.pointRoundingBelowMode==='down'?'selected':''}>切り捨て</option>
+              <option value="round" ${d.pointRoundingBelowMode==='round'?'selected':''}>四捨五入</option>
+            </select>
+          </div>
+          <div class="hint">例：3000P以上・切り捨てなら3120P→3100P。3000P未満・切り上げなら2680P→2700P。有効にするとこちらが共通設定より優先されます。</div>
+        </div>`)}
+
       <div class="field-wrap"><label class="field">その他ルールメモ（積み棒・途中流局の細則など自由記述）</label>
         <textarea oninput="Settings.updateDraft('memo', this.value)">${esc(d.memo||'')}</textarea></div>
 
@@ -5951,6 +5996,7 @@ function renderRuleDetailModal(){
     rows.push(['北の扱い', {none:'効果なし',kyotsuyaku:'共通役',nukidora:'抜きドラ'}[r.kitaHandling]]);
   }
   rows.push(['点数端数処理', {up:'切り上げ',down:'切り捨て',round:'四捨五入'}[r.rounding] + (r.roundingDetailEnabled ? `（詳細：${r.roundingThresholdValue}点以上は${({up:'切り上げ',down:'切り捨て',round:'四捨五入'}[r.roundingAboveMode])}、未満は${({up:'切り上げ',down:'切り捨て',round:'四捨五入'}[r.roundingBelowMode])}）` : '')]);
+  rows.push(['ポイント端数処理', {up:'切り上げ',down:'切り捨て',round:'四捨五入'}[r.pointRounding||'down'] + (r.pointRoundingDetailEnabled ? `（詳細：${r.pointRoundingThresholdValue}P以上は${({up:'切り上げ',down:'切り捨て',round:'四捨五入'}[r.pointRoundingAboveMode])}、未満は${({up:'切り上げ',down:'切り捨て',round:'四捨五入'}[r.pointRoundingBelowMode])}）` : '')]);
   if((r.specialTiles||[]).length){
     rows.push(['その他の特殊牌', r.specialTiles.map(t=>`${t.name||'(名称未設定)'}${t.effect?'：'+t.effect:''}`).join('　/　')]);
   }
