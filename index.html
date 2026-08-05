@@ -4312,7 +4312,7 @@ const Ranking = {
   setPlayerCount(pc){ UI.rankingPlayerCount=pc; UI.rankingExpandedName=null; render(); },
   setScope(scope){ UI.rankingScope=scope; UI.rankingExpandedName=null; render(); },
   setMonth(month){ UI.rankingMonth=month; render(); },
-  setCategory(cat){ UI.rankingCategory=cat; UI.rankingExpandedName=null; if(cat==='rating') UI.rankingScope='all'; render(); },
+  setCategory(cat){ UI.rankingCategory=cat; UI.rankingExpandedName=null; UI.rankingScope = (cat==='rating') ? 'all' : 'month'; render(); },
   toggleExpand(name){ UI.rankingExpandedName = (UI.rankingExpandedName===name) ? null : name; render(); },
   showMonthlyArchive(){
     const cat = UI.rankingCategory;
