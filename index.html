@@ -4090,8 +4090,12 @@ function renderRanking(){
 
   html += `<div class="card"><h3 style="margin-bottom:10px">🏆 ランキング</h3>`;
   UI.rankingPlayerCount = UI.rankingPlayerCount || 3;
-  UI.rankingScope = UI.rankingScope || 'month';
   UI.rankingCategory = UI.rankingCategory || 'rating';
+  if(UI.rankingCategory==='rating'){
+    UI.rankingScope = 'all'; // ゼウスは常に全データ。以前の状態が残っていても毎回ここで強制的に上書きする
+  } else {
+    UI.rankingScope = UI.rankingScope || 'month';
+  }
   UI.rankingMonth = UI.rankingMonth || todayStr().slice(0,7);
   html += `<div class="mode-switch">
     <div class="ms-opt ${UI.rankingPlayerCount===3?'active':''}" onclick="Ranking.setPlayerCount(3)">3人打ち</div>
@@ -4113,7 +4117,9 @@ function renderRanking(){
   </div>`;
 
   const month = UI.rankingScope==='month' ? UI.rankingMonth : null;
-  const ratingRows = simulateGlobalRatings(UI.rankingData, UI.rankingPlayerCount, UI.rankingAliasMap, month);
+  // ゼウス（レーティング）は常に全データが対象。UI.rankingScopeがカテゴリに関わらず
+  // 'month'をデフォルトにしているため、レーティング計算にだけは絶対に月フィルタをかけない。
+  const ratingRows = simulateGlobalRatings(UI.rankingData, UI.rankingPlayerCount, UI.rankingAliasMap, null);
   const ratingByName = {};
   ratingRows.forEach(r=>{ ratingByName[r.name]=r; });
 
