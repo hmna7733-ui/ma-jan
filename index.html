@@ -5397,6 +5397,17 @@ const Settings = {
       st.perMember = newPerMember;
     });
     const primary = DB.members.find(m=>m.id===primaryId);
+    // 統合先（残る方）がまだどのお店にも属していない場合、統合されるメンバーがフリーのお店メンバーなら
+    // そのお店の紐付けを引き継ぐ（どちらに統合してもフリーのお店メンバー一覧から消えないようにするため）。
+    // 自分（isSelf）は特別扱いのため対象外。
+    if(primary && !primary.isSelf && !primary.freeShopName){
+      const shopSource = mergeIds.map(mid=>DB.members.find(x=>x.id===mid)).find(m=>m && m.freeShopName);
+      if(shopSource){
+        primary.freeShopName = shopSource.freeShopName;
+        primary.freeSlotType = null;
+        primary.freeSlotIndex = null;
+      }
+    }
     mergeIds.forEach(mid=>{
       const m = DB.members.find(x=>x.id===mid);
       if(m && primary){
