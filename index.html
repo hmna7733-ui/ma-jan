@@ -1298,15 +1298,13 @@ function renderHome(){
       html += `<div style="font-size:12.5px;color:rgba(223,245,250,.75);margin-bottom:8px">最終差枚数（プラスは勝ち分、マイナスは負け分）を入力してください。</div>`;
       UI.home.memberIds.forEach(mid=>{
         const finalVal = ChipTracker.getFinalValue(mid, todayStr());
-        UI.chipSign = UI.chipSign || {};
-        if(UI.chipSign[mid]===undefined) UI.chipSign[mid] = finalVal<0 ? -1 : 1;
-        const isNeg = UI.chipSign[mid]<0;
         const total = totals[mid]||0;
         const yen = total*effRule.chipValue;
         html += `<div class="row" style="align-items:center;gap:8px;margin-bottom:8px">
           <div class="grow" style="display:flex;align-items:center;gap:6px;color:#dff5fa;font-weight:600">${avatarHtml(mid,24)} ${esc(memberName(mid))}</div>
-          <button class="hako-btn ${isNeg?'active':''}" onclick="ChipTracker.toggleFinalSign('${mid}')">－</button>
-          <input type="text" inputmode="numeric" pattern="[0-9]*" value="${Math.abs(finalVal)}" style="width:70px;text-align:right" onchange="ChipTracker.setFinalAbs('${mid}', this.value)">
+          <button class="btn sm secondary" onclick="ChipTracker.adjustFinal('${mid}',-1)">－</button>
+          <input type="text" inputmode="numeric" pattern="-?[0-9]*" value="${finalVal}" style="width:64px;text-align:center" onchange="ChipTracker.setFinalValue('${mid}', this.value)">
+          <button class="btn sm secondary" onclick="ChipTracker.adjustFinal('${mid}',1)">＋</button>
           <span style="width:22px;font-size:11.5px;color:rgba(223,245,250,.75)">枚</span>
           <span style="width:80px;text-align:right;font-weight:800;color:${yen>0?'#7fe89a':yen<0?'#ff8f87':'#dff5fa'}">${sign(yen)}P</span>
         </div>`;
@@ -1899,17 +1897,9 @@ const ChipTracker = {
     const t = DB.chipTx.find(x=>x.date===date && x.type==='final' && x.memberId===mid && !x.settlementId);
     return t ? t.amount : 0;
   },
-  toggleFinalSign(mid){
-    UI.chipSign = UI.chipSign || {};
-    UI.chipSign[mid] = ((UI.chipSign[mid]||1) * -1);
-    const absVal = Math.abs(ChipTracker.getFinalValue(mid, todayStr()));
-    ChipTracker.setFinalValue(mid, UI.chipSign[mid]*absVal);
-  },
-  setFinalAbs(mid, val){
-    UI.chipSign = UI.chipSign || {};
-    const s = UI.chipSign[mid] || 1;
-    const absVal = Math.abs(numOrZero(val));
-    ChipTracker.setFinalValue(mid, s*absVal);
+  adjustFinal(mid, delta){
+    const cur = ChipTracker.getFinalValue(mid, todayStr());
+    ChipTracker.setFinalValue(mid, cur+delta);
   },
   setFinalValue(mid, val){
     const amt = numOrZero(val);
