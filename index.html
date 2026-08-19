@@ -1369,7 +1369,8 @@ function renderHome(){
     const orphanSessions = getOrphanUnsettledSessions(rule.id);
     if(orphanSessions.length){
       html += `<div class="card"><h3>📦 未精算の対局（${orphanSessions.length}件）</h3>
-        <div class="small-note" style="margin-bottom:8px">他の日付やルールでまだ精算されていない対局です。「本日の精算に追加」を押すと、本日のトータルスコア・チップ・精算に含められます。</div>`;
+        <div class="small-note" style="margin-bottom:8px">他の日付やルールでまだ精算されていない対局です。「本日の精算に追加」を押すと、本日のトータルスコア・チップ・精算に含められます。</div>
+        <button class="btn sm danger" style="margin-bottom:10px" onclick="Home.removeAllOrphans('${rule.id}')">🗑 まとめて削除（${orphanSessions.length}件）</button>`;
       [...orphanSessions].reverse().forEach(s=>{
         const sameMembers = s.players.length===UI.home.memberIds.length && s.players.every(p=>UI.home.memberIds.includes(p.memberId));
         const matchesCurrentRule = s.ruleId===rule.id && sameMembers;
@@ -1429,6 +1430,15 @@ const Home = {
     UI.home.includedOrphanIds = UI.home.includedOrphanIds || [];
     if(!UI.home.includedOrphanIds.includes(sessionId)) UI.home.includedOrphanIds.push(sessionId);
     render();
+  },
+  removeAllOrphans(ruleId){
+    const orphanSessions = getOrphanUnsettledSessions(ruleId);
+    if(orphanSessions.length===0) return;
+    showConfirmModal('未精算の対局をまとめて削除しますか？', `未精算の対局${orphanSessions.length}件をすべて削除します。この操作は元に戻せません。`, ()=>{
+      const ids = new Set(orphanSessions.map(s=>s.id));
+      DB.history = DB.history.filter(s=>!ids.has(s.id));
+      persist('history'); render();
+    }, 'すべて削除する');
   },
   addFreeSlot(shopName, slotType){
     addFreeShopSlot(shopName, slotType);
@@ -2163,6 +2173,7 @@ function renderHistory(){
     if(unsettled.length===0){
       html+=`<div class="small-note" style="margin-top:10px">未精算の対局はありません。</div>`;
     } else {
+      html+=`<button class="btn sm danger" style="margin-top:10px" onclick="History.removeAllUnsettled()">🗑 まとめて削除（${unsettled.length}件）</button>`;
       const byDate2={};
       unsettled.forEach(s=>{ (byDate2[s.date]=byDate2[s.date]||[]).push(s); });
       const dates2=Object.keys(byDate2).sort().reverse();
@@ -2605,6 +2616,15 @@ const History = {
       DB.history = DB.history.filter(s=>s.id!==id);
       persist('history'); render();
     }, '削除する');
+  },
+  removeAllUnsettled(){
+    const unsettled = DB.history.filter(h=>!h.settlementId);
+    if(unsettled.length===0) return;
+    showConfirmModal('未精算の対局をまとめて削除しますか？', `未精算の対局${unsettled.length}件をすべて削除します。この操作は元に戻せません。`, ()=>{
+      DB.history = DB.history.filter(s=>s.settlementId);
+      UI.home.includedOrphanIds = [];
+      persist('history'); render();
+    }, 'すべて削除する');
   },
   updateSortForm(key, val){
     UI.settlementSortForm = UI.settlementSortForm || { startDate:'', endDate:'', ruleId:'' };
