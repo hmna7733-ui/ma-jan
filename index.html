@@ -1312,7 +1312,7 @@ function renderHome(){
 
   if(rule.chipEnabled){
     const totals = computeChipTotals(todayStr(), {onlyUnsettled:true});
-    const todayTransfers = DB.chipTx.filter(t=>t.date===todayStr() && t.type==='transfer' && !t.settlementId);
+    const todayTransfers = getEffectiveChipTxToday(rule).filter(t=>t.type==='transfer');
     html += `<div class="rating-card" style="background:radial-gradient(circle at 80% 100%, rgba(79,195,221,.35), transparent 55%), linear-gradient(160deg,#031c24,#0a3a49 55%,#052833);border:1.5px solid rgba(79,195,221,.5);padding:16px;margin-top:14px">
       <div class="rating-card-icon" style="font-size:80px">🎫</div>
       <div class="rating-card-shine"></div>
@@ -1323,7 +1323,7 @@ function renderHome(){
     } else {
       html += `<div style="font-size:12.5px;color:rgba(223,245,250,.75);margin-bottom:8px">最終差枚数（プラスは勝ち分、マイナスは負け分）を入力してください。</div>`;
       UI.home.memberIds.forEach(mid=>{
-        const finalVal = ChipTracker.getFinalValue(mid, todayStr());
+        const finalVal = ChipTracker.getFinalValue(mid);
         const total = totals[mid]||0;
         const yen = total*effRule.chipValue;
         html += `<div class="row" style="align-items:center;gap:8px;margin-bottom:8px">
@@ -1927,7 +1927,8 @@ function renderModal(scoreOnly){
 function computeChipTotals(date, opts){
   opts = opts || {};
   const totals={};
-  DB.chipTx.filter(t=>t.date===date && (!opts.onlyUnsettled || !t.settlementId)).forEach(t=>{
+  const orphanIds = new Set((UI.home && UI.home.includedOrphanChipIds) || []);
+  DB.chipTx.filter(t=>(t.date===date || (date===todayStr() && orphanIds.has(t.id))) && (!opts.onlyUnsettled || !t.settlementId)).forEach(t=>{
     if(t.type==='transfer'){
       // 貸す側はプラス収支、借りる側はマイナス収支（貸した分は後で返してもらう＝貸した人の取り分）
       totals[t.fromId]=(totals[t.fromId]||0)+t.amount;
@@ -1940,20 +1941,25 @@ function computeChipTotals(date, opts){
 }
 
 const ChipTracker = {
-  getFinalValue(mid, date){
-    const t = DB.chipTx.find(x=>x.date===date && x.type==='final' && x.memberId===mid && !x.settlementId);
+  /* 「本日実効」の最終チップ値エントリを探す：今日の日付のもの、または精算解除などで
+     明示的に本日に追加された（元は別日付の）ものも対象にする。 */
+  findFinalEntry(mid){
+    const orphanIds = new Set((UI.home && UI.home.includedOrphanChipIds) || []);
+    return DB.chipTx.find(x=>x.type==='final' && x.memberId===mid && !x.settlementId && (x.date===todayStr() || orphanIds.has(x.id)));
+  },
+  getFinalValue(mid){
+    const t = ChipTracker.findFinalEntry(mid);
     return t ? t.amount : 0;
   },
   adjustFinal(mid, delta){
-    const cur = ChipTracker.getFinalValue(mid, todayStr());
+    const cur = ChipTracker.getFinalValue(mid);
     ChipTracker.setFinalValue(mid, cur+delta);
   },
   setFinalValue(mid, val){
     const amt = numOrZero(val);
-    const date = todayStr();
-    const existing = DB.chipTx.find(x=>x.date===date && x.type==='final' && x.memberId===mid && !x.settlementId);
+    const existing = ChipTracker.findFinalEntry(mid);
     if(existing){ existing.amount = amt; }
-    else{ DB.chipTx.push({ id:uid(), date, type:'final', memberId:mid, amount:amt }); }
+    else{ DB.chipTx.push({ id:uid(), date:todayStr(), type:'final', memberId:mid, amount:amt }); }
     persist('chipTx');
     render();
   },
