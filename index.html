@@ -1129,6 +1129,32 @@ function avatarHtml(id, size){
 const Router = { go(tab){ UI.tab=tab; UI.showInputForm=false; UI.editingHistoryId=null; render(); window.scrollTo(0,0); } };
 
 /* ============ 描画: ホーム ============ */
+/* 「本日の対局一覧」に含める対局：カレンダー上の今日の日付のもの ＋ ユーザーが明示的に「本日の精算に追加」した未精算の対局。
+   精算解除（unlock）で戻ってきた対局が別の日付だった場合も、ここに含まれるようにするための仕組み。 */
+function getEffectiveTodaySessions(ruleId){
+  const natural = DB.history.filter(h=>h.date===todayStr() && h.ruleId===ruleId && !h.settlementId);
+  const orphanIds = new Set(UI.home.includedOrphanIds||[]);
+  if(orphanIds.size===0) return natural;
+  const naturalIds = new Set(natural.map(h=>h.id));
+  const added = DB.history.filter(h=>orphanIds.has(h.id) && h.ruleId===ruleId && !h.settlementId && !naturalIds.has(h.id));
+  return [...natural, ...added];
+}
+/* 同様に、チップの最終値・貸し借りも「今日の日付のもの」に加えて、明示的に追加した分を含める */
+function getEffectiveChipTxToday(rule){
+  if(!rule.chipEnabled) return [];
+  const matchesMember = t => (t.type==='final' ? UI.home.memberIds.includes(t.memberId) : (UI.home.memberIds.includes(t.fromId)||UI.home.memberIds.includes(t.toId)));
+  const natural = DB.chipTx.filter(t=>t.date===todayStr() && !t.settlementId && matchesMember(t));
+  const orphanChipIds = new Set(UI.home.includedOrphanChipIds||[]);
+  if(orphanChipIds.size===0) return natural;
+  const naturalIds = new Set(natural.map(t=>t.id));
+  const added = DB.chipTx.filter(t=>orphanChipIds.has(t.id) && !t.settlementId && !naturalIds.has(t.id) && matchesMember(t));
+  return [...natural, ...added];
+}
+/* 「本日の対局一覧」に自動では出てこない、他の日付・他のルールの未精算対局（精算解除直後でまだ追加していないものなど） */
+function getOrphanUnsettledSessions(currentRuleId){
+  const effectiveIds = new Set(getEffectiveTodaySessions(currentRuleId).map(h=>h.id));
+  return DB.history.filter(h=>!h.settlementId && !effectiveIds.has(h.id));
+}
 function renderHome(){
   const rule = getRule(UI.home.ruleId);
   let html='';
@@ -1228,7 +1254,7 @@ function renderHome(){
   }
   html += `</div></div></div>`;
   }
-  const todaySessions = DB.history.filter(h=>h.date===todayStr() && h.ruleId===rule.id && !h.settlementId);
+  const todaySessions = getEffectiveTodaySessions(rule.id);
   const readyToInput = UI.home.memberIds.length===rule.playerCount;
   html += `<button class="fab-record" ${readyToInput?'':'disabled'} onclick="InputForm.open()" title="対局結果を記録">＋</button>`;
   html += `<div id="todayScoreCard" class="rating-card" style="background:radial-gradient(circle at 78% 105%, rgba(247,201,117,.5), transparent 55%), radial-gradient(circle at 12% 0%, rgba(255,110,40,.3), transparent 55%), linear-gradient(160deg,#1a0d05,#2b1207 55%,#140803);border:1.5px solid rgba(230,180,90,.55);padding:18px;margin-top:16px">
@@ -1326,7 +1352,7 @@ function renderHome(){
   }
 
   {
-    const chipTxToday = rule.chipEnabled ? DB.chipTx.filter(t=>t.date===todayStr() && !t.settlementId && (t.type==='final' ? UI.home.memberIds.includes(t.memberId) : (UI.home.memberIds.includes(t.fromId)||UI.home.memberIds.includes(t.toId)))) : [];
+    const chipTxToday = getEffectiveChipTxToday(rule);
     const hasSomethingToSettle = todaySessions.length>0 || chipTxToday.length>0;
     html += `<div class="card" style="background:linear-gradient(180deg,#fdecea,#f7d3ce);border:1.5px solid #e2a39c">
       <h3 style="color:#7a2015">🧾 本日の精算</h3>
@@ -1339,6 +1365,22 @@ function renderHome(){
   if(todaySessions.length===0){ html += `<div class="small-note">まだありません</div>`; }
   else { [...todaySessions].reverse().forEach(s=>{ html += sessionCardHtml(s); }); }
   html += `</div>`;
+  {
+    const orphanSessions = getOrphanUnsettledSessions(rule.id);
+    if(orphanSessions.length){
+      html += `<div class="card"><h3>📦 未精算の対局（${orphanSessions.length}件）</h3>
+        <div class="small-note" style="margin-bottom:8px">他の日付やルールでまだ精算されていない対局です。「本日の精算に追加」を押すと、本日のトータルスコア・チップ・精算に含められます。</div>`;
+      [...orphanSessions].reverse().forEach(s=>{
+        const sameMembers = s.players.length===UI.home.memberIds.length && s.players.every(p=>UI.home.memberIds.includes(p.memberId));
+        const matchesCurrentRule = s.ruleId===rule.id && sameMembers;
+        html += sessionCardHtml(s, true);
+        html += matchesCurrentRule
+          ? `<button class="btn sm secondary block" style="margin:-4px 0 12px" onclick="Home.addOrphanToToday('${s.id}')">＋ 本日の精算に追加</button>`
+          : `<div class="small-note" style="margin:-4px 0 12px">${s.ruleId!==rule.id?`別のルール（${esc((getRule(s.ruleId)||{}).name||'不明')}）の対局です。そのルールを選ぶと追加できます。`:'現在選択中のメンバーと異なる対局です。同じメンバーを選ぶと追加できます。'}</div>`;
+      });
+      html += `</div>`;
+    }
+  }
   document.getElementById('app').innerHTML=html;
 }
 
@@ -1382,7 +1424,12 @@ function sessionCardHtml(s, readOnly){
 }
 
 const Home = {
-  setRule(id){ UI.home.ruleId=id||null; UI.home.memberIds=[]; localStorage.setItem('mj_collapse_homeSettings', '0'); render(); },
+  setRule(id){ UI.home.ruleId=id||null; UI.home.memberIds=[]; UI.home.includedOrphanIds=[]; UI.home.includedOrphanChipIds=[]; localStorage.setItem('mj_collapse_homeSettings', '0'); render(); },
+  addOrphanToToday(sessionId){
+    UI.home.includedOrphanIds = UI.home.includedOrphanIds || [];
+    if(!UI.home.includedOrphanIds.includes(sessionId)) UI.home.includedOrphanIds.push(sessionId);
+    render();
+  },
   addFreeSlot(shopName, slotType){
     addFreeShopSlot(shopName, slotType);
     render();
@@ -2195,8 +2242,8 @@ const Settlement = {
     const rule = getRule(UI.home.ruleId);
     if(!rule) return;
     const effRule = getEffectiveRule(rule, todayStr());
-    const sessions = DB.history.filter(h=>h.date===todayStr() && h.ruleId===rule.id && !h.settlementId);
-    const chipTxToday = rule.chipEnabled ? DB.chipTx.filter(t=>t.date===todayStr() && !t.settlementId && (t.type==='final' ? UI.home.memberIds.includes(t.memberId) : (UI.home.memberIds.includes(t.fromId)||UI.home.memberIds.includes(t.toId)))) : [];
+    const sessions = getEffectiveTodaySessions(rule.id);
+    const chipTxToday = getEffectiveChipTxToday(rule);
     if(sessions.length===0 && chipTxToday.length===0){
       renderInfoModal('精算する内容がありません','対局結果またはチップを記録してから確定してください。');
       return;
@@ -2289,12 +2336,17 @@ const Settlement = {
     showConfirmModal('編集のため精算を解除しますか？', 'この精算表を一旦解除し、対局・チップを編集できる状態に戻します。編集後はホーム画面から再度精算を確定してください。', ()=>{
       const st = DB.settlements.find(x=>x.id===id);
       if(!st) return;
+      const unlockedSessionIds = (st.sessionIds||[]).slice();
+      const unlockedChipTxIds = (st.chipTxIds||[]).slice();
       DB.history.forEach(h=>{ if(h.settlementId===id) h.settlementId=null; });
       DB.chipTx.forEach(t=>{ if(t.settlementId===id) t.settlementId=null; });
       DB.settlements = DB.settlements.filter(x=>x.id!==id);
       persist('settlements'); persist('history'); persist('chipTx');
       UI.home.ruleId = st.ruleId;
       UI.home.memberIds = [...st.memberIds];
+      // 解除した対局・チップが今日の日付でなくても、本日の対局一覧で確実に見えて編集できるようにする
+      UI.home.includedOrphanIds = unlockedSessionIds;
+      UI.home.includedOrphanChipIds = unlockedChipTxIds;
       localStorage.setItem('mj_last_members', JSON.stringify(UI.home.memberIds));
       Router.go('home');
     }, '解除する');
