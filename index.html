@@ -938,12 +938,23 @@ function computeFreeAdjustedSession(session, rule){
   const topPrize = session.freeTopPrizeUsed!==undefined ? session.freeTopPrizeUsed : (rule&&rule.freeTopPrize||0);
   const rate = session.freeRateUsed!==undefined ? session.freeRateUsed : (rule&&rule.rate||0);
   const perMember = {};
-  session.players.forEach(p=>{
-    // まず素点の計算（ポイント端数処理があれば先にそれを適用）、その端数処理後の金額からゲーム代・トップ賞を差し引く
-    const roundedYen = roundSignedMoneyForRule(p.point*rate, rule);
-    perMember[p.memberId] = roundedYen - gameFee - (p.rank===1 ? topPrize : 0);
-  });
   const shopTotal = session.players.length*gameFee + topPrize;
+  // 2〜4着（＝1着以外）は通常通り、素点を端数処理してからゲーム代を差し引いて計算する。
+  // 端数処理（切り捨てなど）を全員に独立に適用すると、丸めで生じた差がどこにも行き場を失い
+  // 合計が0からズレてしまう。そのため1着だけは独立計算せず、「店の受取分を引いて残った金額」を
+  // そのまま1着の取り分とすることで、必ず全員+店の合計が0になるようにする。
+  let sumOthers = 0;
+  let topMemberId = null;
+  session.players.forEach(p=>{
+    if(p.rank===1){ topMemberId = p.memberId; return; }
+    const roundedYen = roundSignedMoneyForRule(p.point*rate, rule);
+    const adjusted = roundedYen - gameFee;
+    perMember[p.memberId] = adjusted;
+    sumOthers += adjusted;
+  });
+  if(topMemberId!==null){
+    perMember[topMemberId] = -shopTotal - sumOthers;
+  }
   return { perMember, shopTotal, gameFee, topPrize };
 }
 /* 個別勝負（馬身 or 着順勝負）の結果を計算する。
