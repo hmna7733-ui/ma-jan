@@ -2440,6 +2440,8 @@ const Settlement = {
         babaTotal: s.babaTotal||0,
         freeGameFeeUsed: s.freeGameFeeUsed, freeTopPrizeUsed: s.freeTopPrizeUsed, freeRateUsed: s.freeRateUsed,
         players: s.players.map(p=>({name:memberName(p.memberId), rawScore:p.rawScore, rank:p.rank, point:p.point})),
+        bustedMemberNames: (s.bustedMemberIds||[]).map(memberName),
+        tobashiTargetName: s.tobashiTargetId ? memberName(s.tobashiTargetId) : null,
         sideBet: s.sideBet ? {
           type: s.sideBet.type, amount: s.sideBet.amount,
           participantNames: (s.sideBet.participantIds||[]).map(memberName),
@@ -2500,6 +2502,13 @@ const Settlement = {
           if(s.freeGameFeeUsed!==undefined) newSession.freeGameFeeUsed = s.freeGameFeeUsed;
           if(s.freeTopPrizeUsed!==undefined) newSession.freeTopPrizeUsed = s.freeTopPrizeUsed;
           if(s.freeRateUsed!==undefined) newSession.freeRateUsed = s.freeRateUsed;
+          if((s.bustedMemberNames||[]).length){
+            newSession.bustedMemberIds = s.bustedMemberNames.map(n=>nameToId[n]).filter(Boolean);
+          }
+          if(s.tobashiTargetName){
+            const tid = nameToId[s.tobashiTargetName];
+            if(tid) newSession.tobashiTargetId = tid;
+          }
           if(s.sideBet){
             newSession.sideBet = {
               type: s.sideBet.type, amount: s.sideBet.amount,
@@ -2542,11 +2551,29 @@ const Settlement = {
       }, payload.memberColorByName || {});
       };
       if(dupSettlement){
-        showConfirmModal('このデータは既にあります', `${fmtDate(payload.date)}・${esc(payload.ruleName||'')}の精算表は、すでにこのアカウントに登録されているようです。それでも追加しますか？`, proceedReceive, '追加する');
+        UI._pendingReceivePayload = payload;
+        UI._pendingDupSettlementId = dupSettlement.id;
+        UI._pendingProceedReceive = proceedReceive;
+        renderReceiveDupChoiceModal(payload, dupSettlement);
       } else {
         proceedReceive();
       }
     }catch(e){ console.error(e); renderInfoModal('受け取りに失敗しました', firestoreErrorMessage(e, 'mahjong_shared_settlements')); }
+  },
+  cancelReceiveDup(){
+    UI._pendingReceivePayload=null; UI._pendingDupSettlementId=null; UI._pendingProceedReceive=null;
+    document.getElementById('modalRoot').innerHTML='';
+  },
+  confirmUpdateExisting(){
+    const payload = UI._pendingReceivePayload;
+    const dupSettlement = DB.settlements.find(s=>s.id===UI._pendingDupSettlementId);
+    if(!payload || !dupSettlement){ Settlement.cancelReceiveDup(); return; }
+    updateExistingSettlementFromPayload(payload, dupSettlement);
+  },
+  confirmAddAnyway(){
+    const proceed = UI._pendingProceedReceive;
+    UI._pendingReceivePayload=null; UI._pendingDupSettlementId=null; UI._pendingProceedReceive=null;
+    if(proceed) proceed();
   },
   openRenameMember(settlementId){
     const st = DB.settlements.find(x=>x.id===settlementId);
@@ -6438,6 +6465,81 @@ function showConfirmModal(title, message, onConfirm, confirmLabel, onCancel){
     </div>`;
 }
 function closeConfirmModal(){ _confirmModalCallback=null; _confirmModalCancelCallback=null; document.getElementById('modalRoot').innerHTML=''; }
+/* 受け取ろうとしている精算表が既に登録済みだった場合の選択モーダル。
+   「情報を更新する」を選ぶと、飛ばした/飛ばされた回数・個人勝負・フリーのゲーム代など、
+   後から追加された項目でまだ反映されていないものだけを、既存の対局・精算表に補って追加する
+   （すでに反映済みの情報は上書きしない・重複して増えない）。 */
+function renderReceiveDupChoiceModal(payload, dupSettlement){
+  document.getElementById('modalRoot').innerHTML = `
+    <div class="modal-overlay" onclick="if(event.target===this) Settlement.cancelReceiveDup()">
+      <div class="modal">
+        <div class="modal-head"><h2>このデータは既にあります</h2><button class="close-x" onclick="Settlement.cancelReceiveDup()">✕</button></div>
+        <div class="small-note">${esc(fmtDate(payload.date))}・${esc(payload.ruleName||'')}の精算表は、すでにこのアカウントに登録されているようです。</div>
+        <div class="small-note" style="margin-top:8px">「情報を更新する」を選ぶと、飛ばした/飛ばされた回数や個人勝負など、まだ反映されていない情報だけをこの精算表に補います。すでに反映済みの情報が上書きされたり、対局が重複して増えたりすることはありません。</div>
+        <div style="display:flex;flex-direction:column;gap:8px;margin-top:14px">
+          <button class="btn" onclick="Settlement.confirmUpdateExisting()">情報を更新する（おすすめ）</button>
+          <button class="btn secondary" onclick="Settlement.confirmAddAnyway()">別データとして追加する</button>
+          <button class="btn ghost" onclick="Settlement.cancelReceiveDup()">キャンセル</button>
+        </div>
+      </div>
+    </div>`;
+}
+/* 受け取った精算表の内容を、既存の精算表・対局にマージする（重複追加ではなく補完） */
+function updateExistingSettlementFromPayload(payload, dupSettlement){
+  resolveMemberNames(payload.memberNames||[], (nameToId)=>{
+    const localSessions = DB.history.filter(h=>(dupSettlement.sessionIds||[]).includes(h.id));
+    let updatedCount = 0;
+    (payload.sessions||[]).forEach(ps=>{
+      const match = localSessions.find(ls=>{
+        if(ls.date!==ps.date) return false;
+        if(ls.players.length!==(ps.players||[]).length) return false;
+        return ps.players.every(pp=>{
+          const localP = ls.players.find(lp=>lp.memberId===nameToId[pp.name]);
+          return localP && localP.rawScore===pp.rawScore && localP.rank===pp.rank;
+        });
+      });
+      if(!match) return;
+      let changed = false;
+      if((ps.bustedMemberNames||[]).length && (!match.bustedMemberIds || match.bustedMemberIds.length===0)){
+        match.bustedMemberIds = ps.bustedMemberNames.map(n=>nameToId[n]).filter(Boolean);
+        changed = true;
+      }
+      if(ps.tobashiTargetName && !match.tobashiTargetId){
+        const tid = nameToId[ps.tobashiTargetName];
+        if(tid){ match.tobashiTargetId = tid; changed = true; }
+      }
+      if(ps.sideBet && !match.sideBet){
+        match.sideBet = {
+          type: ps.sideBet.type, amount: ps.sideBet.amount,
+          participantIds: (ps.sideBet.participantNames||[]).map(n=>nameToId[n]).filter(Boolean),
+          results: Object.fromEntries(Object.entries(ps.sideBet.resultsByName||{}).map(([n,v])=>[nameToId[n], v]).filter(([mid])=>mid))
+        };
+        changed = true;
+      }
+      if(ps.freeGameFeeUsed!==undefined && match.freeGameFeeUsed===undefined){ match.freeGameFeeUsed=ps.freeGameFeeUsed; changed=true; }
+      if(ps.freeTopPrizeUsed!==undefined && match.freeTopPrizeUsed===undefined){ match.freeTopPrizeUsed=ps.freeTopPrizeUsed; changed=true; }
+      if(ps.freeRateUsed!==undefined && match.freeRateUsed===undefined){ match.freeRateUsed=ps.freeRateUsed; changed=true; }
+      if(changed) updatedCount++;
+    });
+    Object.entries(payload.perMemberByName||{}).forEach(([name,v])=>{
+      const mid = nameToId[name];
+      if(!mid || !dupSettlement.perMember[mid]) return;
+      const pm = dupSettlement.perMember[mid];
+      if(v.freeAdjustedMoney!==undefined && pm.freeAdjustedMoney===undefined){ pm.freeAdjustedMoney=v.freeAdjustedMoney; updatedCount++; }
+      if(v.sideBetTotal!==undefined && pm.sideBetTotal===undefined){ pm.sideBetTotal=v.sideBetTotal; updatedCount++; }
+    });
+    if(payload.freeSettlementUsed && !dupSettlement.freeSettlementUsed){ dupSettlement.freeSettlementUsed=true; dupSettlement.freeShopTotal=payload.freeShopTotal; }
+    if(payload.hasSideBet && !dupSettlement.hasSideBet){ dupSettlement.hasSideBet=true; }
+    persist('history'); persist('settlements');
+    UI.receiveSettlementCode=null;
+    UI._pendingReceivePayload=null; UI._pendingDupSettlementId=null; UI._pendingProceedReceive=null;
+    document.getElementById('modalRoot').innerHTML='';
+    render();
+    renderInfoModal('更新しました', updatedCount>0
+      ? `${updatedCount}件、飛ばした/飛ばされた・個人勝負・フリーのゲーム代などの情報を補いました。`
+      : 'この精算表には、新しく補える情報はありませんでした（すでに反映済みのようです）。');
+  }, payload.memberColorByName || {});
+}
 function cancelConfirmModal(){
   const cb=_confirmModalCancelCallback;
   _confirmModalCallback=null; _confirmModalCancelCallback=null;
