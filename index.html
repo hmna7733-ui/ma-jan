@@ -3052,6 +3052,33 @@ function computeSettlementStats(memberId, pcFilter, mode, shopName){
 
 /* 対戦相手別成績：スコア差・チップ差・金額差は「相手の合計値の符号を反転したもの」で統一
    （多人数戦のため厳密な1対1のやり取りではないが、相手にどれだけ勝ち越したかの目安として計算） */
+/* 精算表内の金額のやり取りを「一番勝っている人が一番負けている人からまず受け取る」方式で計算する。
+   単純な比例配分だと端数（小数点以下）が出てしまうため、実際の精算のように
+   大きい者同士から順にちょうど精算しきる形で、誰が誰にいくら払ったかを一意に決める。
+   例：A+17800 B-25800 C+19200 D-11200 の場合
+   　　→ まずCがBから19200受け取る（Bは-6600残り）
+   　　→ 次にAがDから11200受け取る（Aは+6600残り）
+   　　→ 最後にAがBから6600受け取る
+   戻り値: [{from, to, amount}, ...]（fromがtoに払った、という向き） */
+function computeSettlementTransactions(values){
+  const remaining = values.filter(v=>v.money!==0).map(v=>({mid:v.mid, amount:v.money}));
+  const transactions = [];
+  while(true){
+    let maxWinner = null, maxLoser = null;
+    remaining.forEach(r=>{
+      if(r.amount>0 && (!maxWinner || r.amount>maxWinner.amount)) maxWinner = r;
+      if(r.amount<0 && (!maxLoser || r.amount<maxLoser.amount)) maxLoser = r;
+    });
+    if(!maxWinner || !maxLoser) break;
+    const amount = Math.min(maxWinner.amount, -maxLoser.amount);
+    if(amount<=0) break;
+    transactions.push({ from: maxLoser.mid, to: maxWinner.mid, amount });
+    maxWinner.amount -= amount;
+    maxLoser.amount += amount;
+    for(let i=remaining.length-1;i>=0;i--){ if(remaining[i].amount===0) remaining.splice(i,1); }
+  }
+  return transactions;
+}
 function computeHeadToHead(memberId, pcFilter, mode, shopName){
   pcFilter = pcFilter || 'all';
   const opp={};
@@ -3124,18 +3151,10 @@ function computeHeadToHead(memberId, pcFilter, mode, shopName){
     });
     st.memberIds.forEach(oid=>{ if(oid!==memberId) ensure(oid); });
 
-    const winnersM = values.filter(v=>v.money>0);
-    const losersM = values.filter(v=>v.money<0);
-    const totalWinM = winnersM.reduce((a,w)=>a+w.money,0);
-    if(totalWinM>0){
-      winnersM.forEach(w=>{
-        losersM.forEach(l=>{
-          const contribution = (w.money/totalWinM)*(-l.money);
-          if(w.mid===memberId){ ensure(l.mid).moneyDiff += contribution; }
-          if(l.mid===memberId){ ensure(w.mid).moneyDiff -= contribution; }
-        });
-      });
-    }
+    computeSettlementTransactions(values).forEach(t=>{
+      if(t.to===memberId){ ensure(t.from).moneyDiff += t.amount; }
+      if(t.from===memberId){ ensure(t.to).moneyDiff -= t.amount; }
+    });
   });
 
   /* チップ差は表示単位（枚）の性質上、常に3人打ちの精算データのみを参照する（4人打ちは対象外） */
@@ -3149,21 +3168,13 @@ function computeHeadToHead(memberId, pcFilter, mode, shopName){
     if(mode==='free' && shopName && (!rule || rule.freeShopName!==shopName)) return;
     const values = st.memberIds.map(mid=>{
       const pm = st.perMember[mid] || {scorePoint:0,chipCount:0};
-      return { mid, chipCount: pm.chipCount||0 };
+      return { mid, money: pm.chipCount||0 };
     });
     st.memberIds.forEach(oid=>{ if(oid!==memberId) ensure(oid); });
-    const winnersC = values.filter(v=>v.chipCount>0);
-    const losersC = values.filter(v=>v.chipCount<0);
-    const totalWinC = winnersC.reduce((a,w)=>a+w.chipCount,0);
-    if(totalWinC>0){
-      winnersC.forEach(w=>{
-        losersC.forEach(l=>{
-          const contribution = (w.chipCount/totalWinC)*(-l.chipCount);
-          if(w.mid===memberId){ ensure(l.mid).chipDiff += contribution; }
-          if(l.mid===memberId){ ensure(w.mid).chipDiff -= contribution; }
-        });
-      });
-    }
+    computeSettlementTransactions(values).forEach(t=>{
+      if(t.to===memberId){ ensure(t.from).chipDiff += t.amount; }
+      if(t.from===memberId){ ensure(t.to).chipDiff -= t.amount; }
+    });
   });
   return opp;
 }
@@ -3192,18 +3203,10 @@ function computeMonthlyMoneyDiffWithOpponent(memberId, oid, pcFilter, mode, shop
       return { mid, money: scoreYen+chipYen+sideBetYen };
     });
     let contribution = 0;
-    const winnersM = values.filter(v=>v.money>0);
-    const losersM = values.filter(v=>v.money<0);
-    const totalWinM = winnersM.reduce((a,w)=>a+w.money,0);
-    if(totalWinM>0){
-      winnersM.forEach(w=>{
-        losersM.forEach(l=>{
-          const c = (w.money/totalWinM)*(-l.money);
-          if(w.mid===memberId && l.mid===oid) contribution += c;
-          if(l.mid===memberId && w.mid===oid) contribution -= c;
-        });
-      });
-    }
+    computeSettlementTransactions(values).forEach(t=>{
+      if(t.to===memberId && t.from===oid) contribution += t.amount;
+      if(t.from===memberId && t.to===oid) contribution -= t.amount;
+    });
     if(contribution!==0){
       bySettlement.push({ date: st.date, settlementId: st.id, ruleName: rule?rule.name:'(ルール削除済)', amount: Math.round(contribution) });
     }
