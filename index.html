@@ -4968,10 +4968,10 @@ function renderAnalysis(){
                 return `<div style="padding:5px 0;border-bottom:1px dashed var(--border);font-size:12.5px">・${esc(n.text)}</div>`;
               }).join('')}
               `:''}
-              ${pcFilter!=='all' ? (()=>{
+              ${(()=>{
                 const monthlyDiff = computeMonthlyMoneyDiffWithOpponent(UI.analysisMemberId, oid, pcFilter, mode, shopName);
                 if(!monthlyDiff.length) return '';
-                return `<div class="section-title">📅 月間のポイント差（精算表ベース）</div>
+                return `<div class="section-title">📅 月間のポイント差（精算表ベース）${pcFilter==='all'?'<span class="small-note">（3人打ち・4人打ち合算）</span>':''}</div>
                 <div class="row wrap" style="gap:8px;margin-bottom:8px">
                   ${monthlyDiff.map(m=>{
                     const label = parseInt(m.month.slice(5,7),10)+'月';
@@ -4980,7 +4980,7 @@ function renderAnalysis(){
                     </div>`;
                   }).join('')}
                 </div>`;
-              })() : ''}
+              })()}
               <button class="link-btn" style="margin-top:8px" onclick="Analysis.setOpponent('${oid}')">この相手との対局一覧を見る</button>
             `:''}
           </div>`;
