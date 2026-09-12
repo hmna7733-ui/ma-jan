@@ -2420,7 +2420,11 @@ const Settlement = {
     const memberColorByName = {};
     st.memberIds.forEach(mid=>{
       const pm = st.perMember[mid] || {scorePoint:0, chipCount:0};
-      perMemberByName[memberName(mid)] = { scorePoint: pm.scorePoint||0, chipCount: pm.chipCount||0 };
+      perMemberByName[memberName(mid)] = {
+        scorePoint: pm.scorePoint||0, chipCount: pm.chipCount||0,
+        freeAdjustedMoney: pm.freeAdjustedMoney,
+        sideBetTotal: pm.sideBetTotal
+      };
       memberColorByName[memberName(mid)] = memberColor(mid);
     });
     const payload = {
@@ -2434,10 +2438,19 @@ const Settlement = {
         date: s.date,
         globalId: s.globalId||null,
         babaTotal: s.babaTotal||0,
-        players: s.players.map(p=>({name:memberName(p.memberId), rawScore:p.rawScore, rank:p.rank, point:p.point}))
+        freeGameFeeUsed: s.freeGameFeeUsed, freeTopPrizeUsed: s.freeTopPrizeUsed, freeRateUsed: s.freeRateUsed,
+        players: s.players.map(p=>({name:memberName(p.memberId), rawScore:p.rawScore, rank:p.rank, point:p.point})),
+        sideBet: s.sideBet ? {
+          type: s.sideBet.type, amount: s.sideBet.amount,
+          participantNames: (s.sideBet.participantIds||[]).map(memberName),
+          resultsByName: Object.fromEntries(Object.entries(s.sideBet.results||{}).map(([mid,v])=>[memberName(mid), v]))
+        } : null
       })),
       rateEnabledUsed: st.rateEnabledUsed, rateUsed: st.rateUsed,
       chipEnabledUsed: st.chipEnabledUsed, chipValueUsed: st.chipValueUsed,
+      freeSettlementUsed: st.freeSettlementUsed || false, freeShopTotal: st.freeShopTotal,
+      freeShopName: rule && rule.freeShopName || null,
+      hasSideBet: st.hasSideBet || false,
       creatorName: st.creatorName || null, creatorUid: st.creatorUid || null,
       globalId: st.globalId || null
     };
@@ -2484,6 +2497,16 @@ const Settlement = {
           const newId = uid();
           const globalId = s.globalId || uid();
           const newSession = { id:newId, globalId, date:s.date, ruleId:rule.id, players, babaTotal:s.babaTotal||0, settlementId };
+          if(s.freeGameFeeUsed!==undefined) newSession.freeGameFeeUsed = s.freeGameFeeUsed;
+          if(s.freeTopPrizeUsed!==undefined) newSession.freeTopPrizeUsed = s.freeTopPrizeUsed;
+          if(s.freeRateUsed!==undefined) newSession.freeRateUsed = s.freeRateUsed;
+          if(s.sideBet){
+            newSession.sideBet = {
+              type: s.sideBet.type, amount: s.sideBet.amount,
+              participantIds: (s.sideBet.participantNames||[]).map(n=>nameToId[n]).filter(Boolean),
+              results: Object.fromEntries(Object.entries(s.sideBet.resultsByName||{}).map(([n,v])=>[nameToId[n], v]).filter(([mid])=>mid))
+            };
+          }
           DB.history.push(newSession);
           newSessionIds.push(newId);
           pushSessionToGlobalRanking(newSession, rule);
@@ -2491,7 +2514,11 @@ const Settlement = {
         const perMember = {};
         Object.entries(payload.perMemberByName||{}).forEach(([name,v])=>{
           const mid = nameToId[name];
-          if(mid) perMember[mid] = { scorePoint: v.scorePoint||0, chipCount: v.chipCount||0 };
+          if(mid){
+            perMember[mid] = { scorePoint: v.scorePoint||0, chipCount: v.chipCount||0 };
+            if(v.freeAdjustedMoney!==undefined) perMember[mid].freeAdjustedMoney = v.freeAdjustedMoney;
+            if(v.sideBetTotal!==undefined) perMember[mid].sideBetTotal = v.sideBetTotal;
+          }
         });
         const newSettlement = {
           id: settlementId, globalId: payload.globalId||uid(), date: payload.date, ruleId: rule.id,
@@ -2500,6 +2527,8 @@ const Settlement = {
           perMember,
           rateEnabledUsed: payload.rateEnabledUsed, rateUsed: payload.rateUsed,
           chipEnabledUsed: payload.chipEnabledUsed, chipValueUsed: payload.chipValueUsed,
+          freeSettlementUsed: payload.freeSettlementUsed || false, freeShopTotal: payload.freeShopTotal,
+          hasSideBet: payload.hasSideBet || false,
           creatorName: payload.creatorName || null, creatorUid: payload.creatorUid || null,
           confirmedAt: Date.now()
         };
@@ -3137,6 +3166,57 @@ function computeHeadToHead(memberId, pcFilter, mode, shopName){
     }
   });
   return opp;
+}
+
+/* 特定の対戦相手との「月間のポイント差」を精算表単位で計算する。
+   ポイント差は既存のcomputeHeadToHeadのmoneyDiffと同じ考え方（勝者の取り分を敗者への比例配分で計算）だが、
+   精算表ごとの内訳（日付・精算表・金額）を残し、月ごとにまとめて返す。 */
+function computeMonthlyMoneyDiffWithOpponent(memberId, oid, pcFilter, mode, shopName){
+  const bySettlement = [];
+  DB.settlements.forEach(st=>{
+    if(!st.memberIds.includes(memberId) || !st.memberIds.includes(oid)) return;
+    const rule = getRule(st.ruleId);
+    if(pcFilter!=='all'){
+      const pc = rule?rule.playerCount:st.memberIds.length;
+      if(pc!==pcFilter) return;
+    }
+    if(mode==='set' && isFreeRule(rule)) return;
+    if(mode==='free' && !isFreeRule(rule)) return;
+    if(mode==='free' && shopName && (!rule || rule.freeShopName!==shopName)) return;
+    const values = st.memberIds.map(mid=>{
+      const pm = st.perMember[mid] || {scorePoint:0,chipCount:0};
+      const useFreeAdjusted = st.freeSettlementUsed && pm.freeAdjustedMoney!==undefined;
+      const scoreYen = useFreeAdjusted ? pm.freeAdjustedMoney : (st.rateEnabledUsed ? pm.scorePoint*st.rateUsed : 0);
+      const chipYen = st.chipEnabledUsed ? (pm.chipCount||0)*st.chipValueUsed : 0;
+      const sideBetYen = pm.sideBetTotal||0;
+      return { mid, money: scoreYen+chipYen+sideBetYen };
+    });
+    let contribution = 0;
+    const winnersM = values.filter(v=>v.money>0);
+    const losersM = values.filter(v=>v.money<0);
+    const totalWinM = winnersM.reduce((a,w)=>a+w.money,0);
+    if(totalWinM>0){
+      winnersM.forEach(w=>{
+        losersM.forEach(l=>{
+          const c = (w.money/totalWinM)*(-l.money);
+          if(w.mid===memberId && l.mid===oid) contribution += c;
+          if(l.mid===memberId && w.mid===oid) contribution -= c;
+        });
+      });
+    }
+    if(contribution!==0){
+      bySettlement.push({ date: st.date, settlementId: st.id, ruleName: rule?rule.name:'(ルール削除済)', amount: Math.round(contribution) });
+    }
+  });
+  bySettlement.sort((a,b)=>a.date.localeCompare(b.date));
+  const monthly = {};
+  bySettlement.forEach(e=>{
+    const month = e.date.slice(0,7);
+    if(!monthly[month]) monthly[month] = { month, total:0, entries:[] };
+    monthly[month].total += e.amount;
+    monthly[month].entries.push(e);
+  });
+  return Object.values(monthly).sort((a,b)=>b.month.localeCompare(a.month));
 }
 
 /* ルール別成績 */
@@ -4888,6 +4968,19 @@ function renderAnalysis(){
                 return `<div style="padding:5px 0;border-bottom:1px dashed var(--border);font-size:12.5px">・${esc(n.text)}</div>`;
               }).join('')}
               `:''}
+              ${pcFilter!=='all' ? (()=>{
+                const monthlyDiff = computeMonthlyMoneyDiffWithOpponent(UI.analysisMemberId, oid, pcFilter, mode, shopName);
+                if(!monthlyDiff.length) return '';
+                return `<div class="section-title">📅 月間のポイント差（精算表ベース）</div>
+                <div class="row wrap" style="gap:8px;margin-bottom:8px">
+                  ${monthlyDiff.map(m=>{
+                    const label = parseInt(m.month.slice(5,7),10)+'月';
+                    return `<div class="chip" style="background:${m.total>0?'linear-gradient(180deg,#e3f7ea,#c9edd6)':m.total<0?'linear-gradient(180deg,#fdecea,#f6d2ce)':'var(--card2)'};cursor:pointer" onclick='Analysis.showMonthlyOpponentDetail(${JSON.stringify(m)}, ${JSON.stringify(label)})'>
+                      <b>${label}</b>&nbsp;<span style="color:${m.total>0?'#1d7a3e':m.total<0?'#b23b2e':'inherit'};font-weight:800">${sign(m.total)}P</span>
+                    </div>`;
+                  }).join('')}
+                </div>`;
+              })() : ''}
               <button class="link-btn" style="margin-top:8px" onclick="Analysis.setOpponent('${oid}')">この相手との対局一覧を見る</button>
             `:''}
           </div>`;
@@ -4985,6 +5078,28 @@ const Analysis = {
           <div class="small-note" style="margin-bottom:12px">初心者からプロ級まで、各段階で求められる視野・ロジック・よくある弱点をまとめました。主に4人打ちを軸とした考え方です。3人打ちは高打点環境などの違いはありますが、押し引き・状況判断・メンタル管理という骨格は共通しています。断定的な表現は避け、確率的な傾向として記載しています。</div>
           ${sections}
           <button class="btn block" style="margin-top:4px" onclick="closeInfoModal()">閉じる</button>
+        </div>
+      </div>`;
+  },
+  showMonthlyOpponentDetail(monthEntry, label){
+    const rows = monthEntry.entries.map(e=>`<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid var(--border)">
+      <div>
+        <div style="font-weight:700;font-size:13px">${esc(fmtDate(e.date))}</div>
+        <div class="small-note">${esc(e.ruleName)}</div>
+      </div>
+      <div style="font-weight:800;font-size:15px;color:${e.amount>0?'#1d7a3e':e.amount<0?'#b23b2e':'inherit'}">${sign(e.amount)}P</div>
+    </div>`).join('');
+    document.getElementById('modalRoot').innerHTML = `
+      <div class="modal-overlay" onclick="if(event.target===this) closeInfoModal()">
+        <div class="modal">
+          <div class="modal-head"><h2>${esc(label)}のポイント差の内訳</h2><button class="close-x" onclick="closeInfoModal()">✕</button></div>
+          <div class="small-note" style="margin-bottom:8px">この月に確定した精算表のうち、この相手との対局が含まれるものを日付順に並べています。</div>
+          <div>${rows}</div>
+          <div style="display:flex;justify-content:space-between;align-items:center;padding-top:10px;margin-top:6px;border-top:2px solid var(--border);font-weight:800">
+            <span>合計</span>
+            <span style="color:${monthEntry.total>0?'#1d7a3e':monthEntry.total<0?'#b23b2e':'inherit'}">${sign(monthEntry.total)}P</span>
+          </div>
+          <button class="btn block" style="margin-top:14px" onclick="closeInfoModal()">閉じる</button>
         </div>
       </div>`;
   },
